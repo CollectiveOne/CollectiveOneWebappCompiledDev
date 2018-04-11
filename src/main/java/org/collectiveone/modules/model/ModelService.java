@@ -1,5 +1,6 @@
 package org.collectiveone.modules.model;
 
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -38,6 +39,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -122,7 +124,7 @@ public class ModelService {
 	}
 	
 	@Transactional
-	public GetResult<ModelSectionDto> getSection(UUID sectionId, UUID requestById, Integer level, UUID requestByUserId, Boolean onlySections) {
+	public GetResult<ModelSectionDto> getSection(UUID sectionId, Integer level, UUID requestByUserId, Boolean onlySections) {
 		return new GetResult<ModelSectionDto>("success", "section retrieved",  getSectionDto(sectionId, level, requestByUserId, onlySections));
 	}
 	
@@ -142,6 +144,19 @@ public class ModelService {
 		}
 		
 		return sectionDto;
+	}
+	
+	@Transactional
+	public GetResult<List<ModelCardWrapperDto>> getSectionCardWrappers(UUID sectionId, UUID requestByUserId) {
+		ModelSection section = modelSectionRepository.findById(sectionId);
+		
+		List<ModelCardWrapperDto> cardWrappersDtos = new ArrayList<ModelCardWrapperDto>(); 
+		
+		for (ModelCardWrapper cardWrapper : section.getCardsWrappers()) {
+			cardWrappersDtos.add(getCardWrapperDtoWithMetadata(cardWrapper, requestByUserId));
+		}
+		
+		return new GetResult<List<ModelCardWrapperDto>>("success", "section retrieved",  cardWrappersDtos);
 	}
 	
 	@Transactional
@@ -323,21 +338,7 @@ public class ModelService {
 		
 		if (!onlySections) {
 			for (ModelCardWrapper cardWrapper : section.getCardsWrappers()) {
-				ModelCardWrapperDto cardWrapperDto = cardWrapper.toDto();
-				
-				cardWrapperDto.setnLikes(cardLikeRepository.countOfCard(cardWrapper.getId()));
-				
-				if (requestByUserId != null) {
-					cardWrapperDto.setUserLiked(cardLikeRepository.findByCardWrapperIdAndAuthor_c1Id(cardWrapper.getId(), requestByUserId) != null);
-				}
-				
-				List<ModelSection> inSections = modelCardWrapperRepository.findParentSections(cardWrapper.getId());
-				
-				for (ModelSection inSection : inSections) {
-					cardWrapperDto.getInSections().add(inSection.toDto());
-				}
-				
-				sectionDto.getCardsWrappers().add(cardWrapperDto);
+				sectionDto.getCardsWrappers().add(getCardWrapperDtoWithMetadata(cardWrapper, requestByUserId));
 			}
 		}
 				
@@ -354,6 +355,24 @@ public class ModelService {
 		} 
 		
 		return sectionDto; 
+	}
+	
+	private ModelCardWrapperDto getCardWrapperDtoWithMetadata(ModelCardWrapper cardWrapper, UUID requestByUserId) {
+		ModelCardWrapperDto cardWrapperDto = cardWrapper.toDto();
+		
+		cardWrapperDto.setnLikes(cardLikeRepository.countOfCard(cardWrapper.getId()));
+		
+		if (requestByUserId != null) {
+			cardWrapperDto.setUserLiked(cardLikeRepository.findByCardWrapperIdAndAuthor_c1Id(cardWrapper.getId(), requestByUserId) != null);
+		}
+		
+		List<ModelSection> inSections = modelCardWrapperRepository.findParentSections(cardWrapper.getId());
+		
+		for (ModelSection inSection : inSections) {
+			cardWrapperDto.getInSections().add(inSection.toDto());
+		}
+		
+		return cardWrapperDto;
 	}
 	
 	@Transactional
@@ -379,7 +398,7 @@ public class ModelService {
 	}
 	
 	@Transactional
-	public PostResult createCardWrapper(ModelCardDto cardDto, UUID sectionId, UUID creatorId) {
+	public PostResult createCardWrapper(ModelCardDto cardDto, UUID sectionId, UUID creatorId, UUID beforeId, UUID afterId) {
 		
 		ModelSection section = modelSectionRepository.findById(sectionId);
 		if (section == null) return new PostResult("error", "section not found", "");
@@ -400,25 +419,42 @@ public class ModelService {
 			}
 		}
 		
+		AppUser creator = appUserRepository.findByC1Id(creatorId);
+		
 		ModelCardWrapper cardWrapper = new ModelCardWrapper();
 		cardWrapper.setCard(card);
 		cardWrapper.setInitiative(section.getInitiative());
+		cardWrapper.setCreator(creator);
+		cardWrapper.setCreationDate(new Timestamp(System.currentTimeMillis()));
+		cardWrapper.getEditors().add(creator);
+		cardWrapper.setLastEdited(new Timestamp(System.currentTimeMillis()));
 		
 		cardWrapper = modelCardWrapperRepository.save(cardWrapper);
 		
+		Integer ix = null;
+		
+		if (beforeId != null) {
+			ModelCardWrapper beforeCardWrapper = modelCardWrapperRepository.findById(beforeId);
+			ix = section.getCardsWrappers().indexOf(beforeCardWrapper);
+		}
+		
+		if (afterId != null) {
+			ModelCardWrapper afterCardWrapper = modelCardWrapperRepository.findById(afterId);
+			ix = section.getCardsWrappers().indexOf(afterCardWrapper) + 1;
+		}
+		
 		/* add location */
-		if (cardDto.getIxInSection() == null) {
+		if (ix == null) {
 			/* at the end */
 			section.getCardsWrappers().add(cardWrapper);
 		} else {
-			if (cardDto.getIxInSection() == -1) {
+			if ((ix == -1) || (ix == section.getCardsWrappers().size() - 1)) {
 				/* at the end */
 				section.getCardsWrappers().add(cardWrapper);
 			} else {
 				/* at a given ix */
-				section.getCardsWrappers().add(cardDto.getIxInSection(), cardWrapper);
+				section.getCardsWrappers().add(ix, cardWrapper);
 			}
-
 		}
 		
 		modelSectionRepository.save(section);
@@ -459,7 +495,13 @@ public class ModelService {
 		
 		card = modelCardRepository.save(card);
 		cardWrapper.setCard(card);
+		cardWrapper.setLastEdited(new Timestamp(System.currentTimeMillis()));
 		
+		/* add an editor only once */
+		AppUser prevEditor = modelCardWrapperRepository.findEditor(cardWrapper.getId(), creatorId);
+		if (prevEditor == null) {
+			cardWrapper.getEditors().add(appUserRepository.findByC1Id(creatorId));
+		}
 		
 		/* this inSections actually refer to add to new sections */
 		for (ModelSectionDto sectionDto : cardDto.getInSections()) {
@@ -534,47 +576,49 @@ public class ModelService {
 	}
 	
 	@Transactional
-	public GetResult<AppUserDto> getCardWrapperCreator(UUID cardWrapperId) {
-		
-		List<Activity> created = activityRepository.findOfCard(cardWrapperId, ActivityType.MODEL_CARDWRAPPER_CREATED);
-		
-		
-		AppUserDto creator = null;
-		
-		if (created.size() > 0) {
-			creator = created.get(0).getTriggerUser().toDtoLight();
-		}
-		
-		return new GetResult<AppUserDto>("success", "authors events retrieved", creator);
-	}
-	
-	@Transactional
 	public Initiative getCardWrapperInitiative(UUID cardWrapperId) {
 		return modelCardWrapperRepository.findById(cardWrapperId).getInitiative();
 	}
 	
 	@Transactional
-	public GetResult<Page<ModelCardWrapperDto>> searchCardWrapper(String query, PageRequest page, UUID initiativeId) {
-		List<UUID> initiativeEcosystemIds = initiativeService.findAllInitiativeEcosystemIds(initiativeId);
-		Page<ModelCardWrapper> enititiesPage = modelCardWrapperRepository.searchBy("%"+query.toLowerCase()+"%", initiativeEcosystemIds, page);
+	public GetResult<Page<ModelCardWrapperDto>> searchCardWrapper(UUID sectionId, String query, Integer page, Integer pageSize, String sortByIn, Integer levels, UUID requestById) {
+		List<UUID> allSectionIds = new ArrayList<UUID>();
+		
+		allSectionIds.add(sectionId);
+		allSectionIds.addAll(getAllSubsectionsIds(sectionId, levels - 1));
+		
+		PageRequest pageRequest = null;
+		
+		switch (sortByIn) {
+			case "CREATION_DATE_DESC":
+				pageRequest = new PageRequest(page, pageSize, new Sort(Sort.Direction.DESC, "crdWrp.creationDate"));
+				break;
+				
+			case "EDITION_DATE_DESC":
+				pageRequest = new PageRequest(page, pageSize, new Sort(Sort.Direction.DESC, "crdWrp.lastEdited"));
+				break;
+				
+			case "CREATOR":
+				pageRequest = new PageRequest(page, pageSize, new Sort(Sort.Direction.ASC, "crdWrp.creator.profile.nickname"));
+				break;
+			
+			default:
+				pageRequest = new PageRequest(page, pageSize);
+				break;
+		}
+		
+		Page<ModelCardWrapper> enititiesPage = 
+				modelCardWrapperRepository.searchInSectionByQuery(allSectionIds, "%"+query.toLowerCase()+"%", pageRequest);
 		
 		List<ModelCardWrapperDto> cardsDtos = new ArrayList<ModelCardWrapperDto>();
 		
 		for(ModelCardWrapper cardWrapper : enititiesPage.getContent()) {
-			List<ModelSection> inSections = modelCardWrapperRepository.findParentSections(cardWrapper.getId());
-			
-			ModelCardWrapperDto cardWrapperDto = cardWrapper.toDto();
-			
-			for (ModelSection section : inSections) {
-				cardWrapperDto.getInSections().add(section.toDto());
-			}
-			
-			cardsDtos.add(cardWrapperDto);
+			cardsDtos.add(getCardWrapperDtoWithMetadata(cardWrapper, requestById));
 		}
 		
-		Page<ModelCardWrapperDto> dtosPage = new PageImpl<ModelCardWrapperDto>(cardsDtos, page, enititiesPage.getNumberOfElements());
+		Page<ModelCardWrapperDto> dtosPage = new PageImpl<ModelCardWrapperDto>(cardsDtos, pageRequest, enititiesPage.getNumberOfElements());
 		
-		return new GetResult<Page<ModelCardWrapperDto>>("succes", "cards returned", dtosPage);
+		return new GetResult<Page<ModelCardWrapperDto>>("success", "cards returned", dtosPage);
 	}
 		
 	@Transactional
