@@ -4,7 +4,6 @@ import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.util.function.Predicate;
 
 import javax.transaction.Transactional;
 
@@ -28,7 +27,7 @@ import org.collectiveone.modules.initiatives.repositories.InitiativeRepositoryIf
 import org.collectiveone.modules.model.dto.ModelCardDto;
 import org.collectiveone.modules.model.dto.ModelCardWrapperDto;
 import org.collectiveone.modules.model.dto.ModelSectionDto;
-import org.collectiveone.modules.model.dto.ModelSectionGenealogyDto;
+import org.collectiveone.modules.model.dto.ModelSectionLinkedDto;
 import org.collectiveone.modules.model.repositories.ModelCardRepositoryIf;
 import org.collectiveone.modules.model.repositories.ModelCardWrapperRepositoryIf;
 import org.collectiveone.modules.model.repositories.ModelSectionRepositoryIf;
@@ -79,10 +78,6 @@ public class ModelService {
 	
 	@Autowired
 	private CardLikeRepositoryIf cardLikeRepository;
-	
-	
-	/* local memory needed as protection against infinite recursive loops */
-	private List<UUID> readIds = new ArrayList<UUID>();
 	
 	
 	@Transactional
@@ -158,36 +153,6 @@ public class ModelService {
 		return new GetResult<List<ModelCardWrapperDto>>("success", "section retrieved",  cardWrappersDtos);
 	}
 	
-	@Transactional
-	public GetResult<ModelSectionGenealogyDto> getSectionParentGenealogy(UUID sectionId) {
-		readIds.clear();
-		return new GetResult<ModelSectionGenealogyDto>("success", "parents retrieved", getSectionParentGenealogyRec(sectionId));
-	}
-	
-	@Transactional
-	public ModelSectionGenealogyDto getSectionParentGenealogyRec(UUID sectionId) {
-		
-		ModelSectionGenealogyDto genealogy = new ModelSectionGenealogyDto();
-		genealogy.setSection(modelSectionRepository.findById(sectionId).toDtoLight());
-		
-		readIds.add(sectionId);
-		
-		List<ModelSection> inSections = modelSectionRepository.findParentSections(sectionId);
-		
-		for (ModelSection inSection : inSections) {
-			if (!readIds.contains(inSection.getId())) {
-				readIds.add(inSection.getId());
-				genealogy.getParents().add(getSectionParentGenealogyRec(inSection.getId()));	
-			} else {
-				/* if section already added, add it but don't keep looking recursively */
-				ModelSectionGenealogyDto repeatedGenealogy = new ModelSectionGenealogyDto();
-				repeatedGenealogy.setSection(inSection.toDtoLight());
-				genealogy.getParents().add(repeatedGenealogy);
-			}
-		}
-		
-		return genealogy;
-	}
 	
 	@Transactional
 	public GetResult<Page<ModelSectionDto>> searchSection(String query, PageRequest page, UUID initiativeId, UUID requestByUserId) {
@@ -655,39 +620,135 @@ public class ModelService {
 	}
 	
 	@Transactional
-	public List<UUID> getAllSubsectionsIds (UUID sectionId, Integer level) {
-		readIds.clear();
-		readIds.add(sectionId);
-		return getAllSubsectionsIdsRec(sectionId, level);
+	public GetResult<ModelSectionLinkedDto> getSectionParentGenealogy(UUID sectionId, Integer levels) {
+		ModelSectionLinkedDto linkedDtos = getModelSectionDtosFromNodes(getSectionNode(sectionId, true, false, levels));
+		return new GetResult<ModelSectionLinkedDto>("success", "parents retrieved", linkedDtos);
 	}
 	
+	/* Recursive method that get the sections data and convert it to a DTO structure while keeping the
+	 * links between sections as derived from the input Node */
 	@Transactional
-	public List<UUID> getAllSubsectionsIdsRec (UUID sectionId, Integer level) {
-		if (level <= 0) {
-			return new ArrayList<UUID>();
-		} 
+	public ModelSectionLinkedDto getModelSectionDtosFromNodes(GraphNode node) {
 		
-		List<UUID> subsectionsIds = modelSectionRepository.getSubsectionsIds(sectionId);
-		List<UUID> allSubsectionIds = new ArrayList<UUID>();
+		ModelSectionLinkedDto sectionLinked = new ModelSectionLinkedDto();
 		
-		/* remove those that have been already been added */
-		Predicate<UUID> isContained = e -> readIds.contains(e);
-		subsectionsIds.removeIf(isContained);
+		sectionLinked.setSection(modelSectionRepository.findById(node.elementId).toDtoLight());
 		
-		allSubsectionIds.addAll(subsectionsIds);
-		readIds.addAll(subsectionsIds);
+		for (GraphNode parentNode : node.getParents()) {
+			sectionLinked.getParents().add(getModelSectionDtosFromNodes(parentNode));
+		}
 		
-		for (UUID subsectionId : subsectionsIds) {
-			List<UUID> subsubsectionIds = getAllSubsectionsIdsRec(subsectionId, level - 1);
+		for (GraphNode childrenNode : node.getChildren()) {
+			sectionLinked.getChildren().add(getModelSectionDtosFromNodes(childrenNode));
+		}
+		
+		return sectionLinked;
+	}
+	
+	
+	@Transactional
+	public GraphNode getSectionNode(UUID sectionId, Boolean addParents, Boolean addChildren, Integer levels) {
+		/* levels = null means as many levels as available */
+		return getSectionNodeRec(sectionId, addParents, addChildren, levels, new ArrayList<UUID>());
+	}
+	
+	private GraphNode getSectionNodeRec(UUID sectionId, Boolean addParents, Boolean addChildren, Integer levels, List<UUID> readIds) {
+		
+		if (!modelSectionRepository.sectionExists(sectionId)) {
+			return null;
+		}
+		
+		GraphNode node = new GraphNode();
+		node.setElementId(sectionId);
+		readIds.add(sectionId);
+		
+		/* this node is one level */
+		levels = levels != null ? levels - 1 : null;
+		
+		Boolean this_neighbors = false;
+		if (levels != null) {
+			if (levels > 0) {
+				this_neighbors = true; 
+			}
+		} else {
+			this_neighbors = true;
+		}
+		
+		/* children are one more level */
+		if (this_neighbors) {
 			
-			for (UUID subsubsectionId : subsubsectionIds) {
-				if(allSubsectionIds.indexOf(subsubsectionId) == -1) {
-					allSubsectionIds.add(subsubsectionId);
+			/* logic to see if recurse moved here because is common to parent
+			 * and children */
+			Boolean recurse = false;
+			if (levels != null) {
+				if (levels > 2) {
+					recurse = true; 
 				}
+			} else {
+				recurse = true;
+			}
+			
+			if (addParents) {
+				List<UUID> parents = modelSectionRepository.findParentSectionsIds(sectionId);
+				
+				for (UUID inSectionId : parents) {
+					if (!readIds.contains(inSectionId)) {
+						GraphNode parentNode = null;
+						if (recurse) {
+							/* recursive call to search for parent parents*/
+							parentNode = getSectionNodeRec(inSectionId, addParents, false, levels != null ? levels - 1 : null, readIds);	
+						} else {
+							readIds.add(inSectionId);
+							parentNode = new GraphNode();
+							parentNode.setElementId(inSectionId);
+						}
+						
+						node.getParents().add(parentNode);
+						
+					} else {
+						/* if section already added, add it but don't keep looking recursively */
+						GraphNode repeatedNode = new GraphNode();
+						repeatedNode.setElementId(inSectionId);
+						node.getParents().add(repeatedNode);
+					}
+				}
+			}
+			
+			if (addChildren) {
+				List<UUID> children = modelSectionRepository.findSubsectionsIds(sectionId);
+				
+				for (UUID subSectionId : children) {
+					if (!readIds.contains(subSectionId)) {
+						GraphNode childrenNode = null;
+						if (recurse) {
+							/* recursive call to search for parent parents*/
+							childrenNode = getSectionNodeRec(subSectionId, false, addChildren, levels != null ? levels - 1 : null, readIds);	
+						} else {
+							readIds.add(subSectionId);
+							childrenNode = new GraphNode();
+							childrenNode.setElementId(subSectionId);
+						}
+						
+						node.getChildren().add(childrenNode);
+						
+					} else {
+						/* if section already added, add it but don't keep looking recursively */
+						GraphNode repeatedNode = new GraphNode();
+						repeatedNode.setElementId(subSectionId);
+						node.getChildren().add(repeatedNode);
+					}
+				}
+				
 			}
 		}
 		
-		return allSubsectionIds;
+		return node;
+	}
+	
+	@Transactional
+	public List<UUID> getAllSubsectionsIds (UUID sectionId, Integer level) {
+		GraphNode subsection = getSectionNode(sectionId, false, true, level);
+		return subsection.toList(false, true);
 	}
 	
 	@Transactional
@@ -709,27 +770,19 @@ public class ModelService {
 	@Transactional
 	public Page<Activity> getActivityUnderSection (UUID sectionId, PageRequest page, Boolean onlyMessages, Integer level) {
 		
-		List<UUID> allSectionIds = new ArrayList<UUID>();
+		List<UUID> allSectionIds = getAllSubsectionsIds(sectionId, level);
+		List<UUID> cardsIds = allSectionIds.size() > 0 ? modelCardWrapperRepository.findAllCardsIdsOfSections(allSectionIds) : new ArrayList<UUID>();
 		
-		allSectionIds.add(sectionId);
-		allSectionIds.addAll(getAllSubsectionsIds(sectionId, level - 1));
-		
-		List<UUID> cardsIds = allSectionIds.size() > 0 ? modelCardRepository.findAllCardsIdsOfSections(allSectionIds) : new ArrayList<UUID>();
+		if (cardsIds.size() == 0) {
+			cardsIds.add(UUID.randomUUID());
+		}
 		
 		Page<Activity> activities = null;
 		
 		if (!onlyMessages) {
-			if (cardsIds.size() > 0) {
-				activities = activityRepository.findOfSectionsAndCards(allSectionIds, cardsIds, page);	
-			} else {
-				activities = activityRepository.findOfSections(allSectionIds, page);
-			}
+			activities = activityRepository.findOfSectionsOrCards(allSectionIds, cardsIds, page);	
 		} else {
-			if (cardsIds.size() > 0) {
-				activities = activityRepository.findOfSectionsAndCardsAndType(allSectionIds, cardsIds, ActivityType.MESSAGE_POSTED, page);	
-			} else {
-				activities = activityRepository.findOfSectionsAndType(allSectionIds, ActivityType.MESSAGE_POSTED, page);
-			}
+			activities = activityRepository.findOfSectionsOrCardsAndType(allSectionIds, cardsIds, ActivityType.MESSAGE_POSTED, page);	
 		}
 			
 		return activities;
@@ -753,10 +806,16 @@ public class ModelService {
 	@Transactional
 	public Page<Activity> getActivityUnderCard (UUID cardWrapperId, PageRequest page, Boolean onlyMessages) {
 		Page<Activity> activities = null;
+		List<UUID> dum = new ArrayList<UUID>();
+		List<UUID> cardIds = new ArrayList<UUID>();
+		
+		dum.add(UUID.randomUUID());
+		cardIds.add(cardWrapperId);
+		
 		if (!onlyMessages) {
-			activities = activityRepository.findOfCard(cardWrapperId, page);
+			activities = activityRepository.findOfSectionsOrCards(dum, cardIds, page);
 		} else {
-			activities = activityRepository.findOfCardAndType(cardWrapperId, ActivityType.MESSAGE_POSTED, page);
+			activities = activityRepository.findOfSectionsOrCardsAndType(dum, cardIds, ActivityType.MESSAGE_POSTED, page);
 		}
 		return activities;
 	}

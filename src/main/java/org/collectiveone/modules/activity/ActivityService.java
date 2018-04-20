@@ -3,7 +3,9 @@ package org.collectiveone.modules.activity;
 import java.io.IOException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.SortedSet;
 import java.util.UUID;
 
@@ -14,10 +16,14 @@ import org.collectiveone.common.dto.PostResult;
 import org.collectiveone.modules.activity.dto.NotificationDto;
 import org.collectiveone.modules.activity.dto.SubscriberDto;
 import org.collectiveone.modules.activity.enums.ActivityType;
-import org.collectiveone.modules.activity.enums.NotificationEmailState;
+import org.collectiveone.modules.activity.enums.NotificationContextType;
 import org.collectiveone.modules.activity.enums.NotificationState;
-import org.collectiveone.modules.activity.enums.SubscriberEmailNotificationsState;
-import org.collectiveone.modules.activity.enums.SubscriberState;
+import org.collectiveone.modules.activity.enums.SubscriberEmailNowConfig;
+import org.collectiveone.modules.activity.enums.SubscriberEmailSummaryConfig;
+import org.collectiveone.modules.activity.enums.SubscriberEmailSummaryPeriodConfig;
+import org.collectiveone.modules.activity.enums.SubscriberInAppConfig;
+import org.collectiveone.modules.activity.enums.SubscriberInheritConfig;
+import org.collectiveone.modules.activity.enums.SubscriberPushConfig;
 import org.collectiveone.modules.activity.enums.SubscriptionElementType;
 import org.collectiveone.modules.activity.repositories.ActivityRepositoryIf;
 import org.collectiveone.modules.activity.repositories.NotificationRepositoryIf;
@@ -30,8 +36,10 @@ import org.collectiveone.modules.initiatives.Initiative;
 import org.collectiveone.modules.initiatives.InitiativeService;
 import org.collectiveone.modules.initiatives.Member;
 import org.collectiveone.modules.initiatives.repositories.InitiativeRepositoryIf;
+import org.collectiveone.modules.model.GraphNode;
 import org.collectiveone.modules.model.ModelCardWrapper;
 import org.collectiveone.modules.model.ModelSection;
+import org.collectiveone.modules.model.ModelService;
 import org.collectiveone.modules.model.repositories.ModelCardWrapperRepositoryIf;
 import org.collectiveone.modules.model.repositories.ModelSectionRepositoryIf;
 import org.collectiveone.modules.tokens.InitiativeTransfer;
@@ -39,6 +47,7 @@ import org.collectiveone.modules.tokens.TokenMint;
 import org.collectiveone.modules.tokens.TokenType;
 import org.collectiveone.modules.users.AppUser;
 import org.collectiveone.modules.users.AppUserRepositoryIf;
+import org.collectiveone.modules.users.UserOnlineStatus;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -48,6 +57,9 @@ public class ActivityService {
 	
 	@Autowired
 	private InitiativeService initiativeService;
+	
+	@Autowired
+	private ModelService modelService;
 	
 	@Autowired
 	private EmailService emailService;
@@ -88,8 +100,7 @@ public class ActivityService {
 	public void sendNotificationEmailsSendNow() throws IOException {
 		
 		List<Notification> notifications = 
-				notificationRepository.findBySubscriber_EmailNotificationsStateAndEmailState(
-						SubscriberEmailNotificationsState.SEND_NOW, NotificationEmailState.PENDING);
+				notificationRepository.findByEmailNowState(NotificationState.PENDING);
 		
 		emailService.sendNotificationsSendNow(notifications);
 	}
@@ -98,8 +109,8 @@ public class ActivityService {
 	public void sendNotificationEmailsOnceADay() throws IOException {
 		
 		List<Notification> notifications = 
-				notificationRepository.findBySubscriber_EmailNotificationsStateAndEmailState(
-						SubscriberEmailNotificationsState.SEND_ONCEADAY, NotificationEmailState.PENDING);
+				notificationRepository.findBySubscriber_EmailSummaryPeriodConfigAndEmailSummaryState(
+						SubscriberEmailSummaryPeriodConfig.DAILY, NotificationState.PENDING);
 		
 		emailService.sendNotificationsGrouped(notifications);
 	}
@@ -108,29 +119,82 @@ public class ActivityService {
 	public void sendNotificationEmailsOnceAWeek() throws IOException {
 		
 		List<Notification> notifications = 
-				notificationRepository.findBySubscriber_EmailNotificationsStateAndEmailState(
-						SubscriberEmailNotificationsState.SEND_ONCEAWEEK, NotificationEmailState.PENDING);
+				notificationRepository.findBySubscriber_EmailSummaryPeriodConfigAndEmailSummaryState(
+						SubscriberEmailSummaryPeriodConfig.WEEKLY, NotificationState.PENDING);
 		
 		emailService.sendNotificationsGrouped(notifications);
 	}
 	
-	@Transactional
-	public GetResult<List<NotificationDto>> getUserNotifications(UUID userId, PageRequest page) {
+	private List<Notification> userUnreadNotifications(
+			UUID userId, 
+			NotificationContextType contextType, 
+			UUID elementId,
+			PageRequest page) {
 		
-		List<NotificationDto> notifications = new ArrayList<NotificationDto>();
+		List<UUID> allSectionIds = null;
+		List<UUID> cardsIds = null;
 		
-		for(Notification notification : notificationRepository.findOfUser(userId, page)) {
-			notifications.add(notification.toDto());
+		switch (contextType) {
+			case MODEL_SECTION:
+				allSectionIds = modelService.getAllSubsectionsIds(elementId, null);
+				cardsIds = allSectionIds.size() > 0 ? modelCardWrapperRepository.findAllCardsIdsOfSections(allSectionIds) : new ArrayList<UUID>();
+				break;
+				
+			case MODEL_CARD:
+				allSectionIds = new ArrayList<UUID>();
+				cardsIds = new ArrayList<UUID>();
+				cardsIds.add(elementId);
+				break;
+				
+			default:
+				break;
+		
 		}
 		
-		return new GetResult<List<NotificationDto>>("success", "notifications found", notifications);
+		if (allSectionIds.size() == 0) {
+			allSectionIds.add(UUID.randomUUID());
+		}
+		
+		if (cardsIds.size() == 0) {
+			cardsIds.add(UUID.randomUUID());
+		}
+		
+		return notificationRepository.findOfUserInSections(userId, NotificationState.PENDING, allSectionIds, cardsIds, page);
 	}
 	
 	@Transactional
-	public PostResult notificationsRead(UUID userId) {
-		for(Notification notification: notificationRepository.findBySubscriber_User_C1IdAndState(userId, NotificationState.PENDING)) {
-			notification.setState(NotificationState.DELIVERED);
-			notification.setEmailState(NotificationEmailState.DELIVERED);
+	public GetResult<List<NotificationDto>> getUserNotifications(
+			UUID userId, 
+			NotificationContextType contextType, 
+			UUID elementId,
+			PageRequest page) {
+		
+		List<NotificationDto> notificationsDtos = new ArrayList<NotificationDto>();
+		
+		List<Notification> notifications = userUnreadNotifications(userId, contextType, elementId, page);
+		
+		for(Notification notification : notifications) {
+			notificationsDtos.add(notification.toDto());
+		}
+		
+		return new GetResult<List<NotificationDto>>("success", "notifications found", notificationsDtos);
+	}
+	
+	@Transactional
+	public PostResult notificationsRead(
+			UUID userId, 
+			NotificationContextType contextType, 
+			UUID elementId ) {
+		
+		List<Notification> notifications = userUnreadNotifications(userId, contextType, elementId, null);
+		
+		for(Notification notification: notifications) {
+			
+			notification.setInAppState(NotificationState.DELIVERED);
+			notification.setPushState(NotificationState.DELIVERED);
+			notification.setEmailNowState(NotificationState.DELIVERED);
+			notification.setEmailSummaryState(NotificationState.DELIVERED);
+			
 			notificationRepository.save(notification);
 		}
 		
@@ -139,57 +203,89 @@ public class ActivityService {
 	
 	@Transactional
 	public void addSubscriber(UUID elementId, UUID userId, SubscriptionElementType type) {
-		if (subscriberRepository.findByElementIdAndUser_C1Id(elementId, userId) == null) {
+		if (subscriberRepository.findByElementIdAndTypeAndUser_C1Id(elementId, type, userId) == null) {
 			Subscriber subscriber = new Subscriber();
 			
 			subscriber.setElementId(elementId);
 			subscriber.setType(type);
 			subscriber.setUser(appUserRepository.findByC1Id(userId));
-			subscriber.setState(SubscriberState.SUBSCRIBED);
-			subscriber.setEmailNotificationsState(SubscriberEmailNotificationsState.SEND_ONCEADAY);
+			
+			subscriber.setInheritConfig(SubscriberInheritConfig.INHERIT);
+			
+			initDefaultSubscriber(subscriber);
 			
 			subscriberRepository.save(subscriber);
 		}
 	}
 	
 	@Transactional
-	public void removeSubscriber(UUID elementId, UUID userId) {
-		Subscriber subscriber = subscriberRepository.findByElementIdAndUser_C1Id(elementId, userId);
+	public void removeSubscriber(UUID elementId, SubscriptionElementType type, UUID userId) {
+		Subscriber subscriber = subscriberRepository.findByElementIdAndTypeAndUser_C1Id(elementId, type, userId);
 		subscriberRepository.delete(subscriber);
 	}
 	
 	
 	@Transactional
-	public PostResult editSubscriberState(UUID userId, UUID elementId, SubscriberState state) {
-		Subscriber subscriber = subscriberRepository.findByElementIdAndUser_C1Id(elementId, userId);
-		subscriber.setState(state);
+	public PostResult editSubscriber(UUID userId, UUID elementId, SubscriptionElementType type, SubscriberDto subscriberDto) {
+		Subscriber subscriber = getOrCreateSubscriber(elementId, type, userId);
+				
+		subscriber.setInheritConfig(SubscriberInheritConfig.valueOf(subscriberDto.getInheritConfig()));
+		
+		subscriber.setInAppConfig(SubscriberInAppConfig.valueOf(subscriberDto.getInAppConfig()));
+		subscriber.setPushConfig(SubscriberPushConfig.valueOf(subscriberDto.getPushConfig()));
+		subscriber.setEmailNowConfig(SubscriberEmailNowConfig.valueOf(subscriberDto.getEmailNowConfig()));
+		subscriber.setEmailSummaryConfig(SubscriberEmailSummaryConfig.valueOf(subscriberDto.getEmailSummaryConfig()));
+		subscriber.setEmailSummaryPeriodConfig(SubscriberEmailSummaryPeriodConfig.valueOf(subscriberDto.getEmailSummaryPeriodConfig()));
+				
 		subscriberRepository.save(subscriber);
 		
 		return new PostResult("success", "member notifications changed", "");
 	}
 	
 	@Transactional
-	public PostResult editSubscriberEmailNotificationsState(UUID userId, UUID elementId, SubscriberEmailNotificationsState emailNotificationsState) {
-		Subscriber subscriber = subscriberRepository.findByElementIdAndUser_C1Id(elementId, userId);
-		subscriber.setEmailNotificationsState(emailNotificationsState);
-		subscriberRepository.save(subscriber);
-		
-		return new PostResult("success", "subscriber email notifications changed", "");
-	}
-	
-	@Transactional
-	public GetResult<SubscriberDto> getSubscriber(UUID userId, UUID initiativeId) {
-		Subscriber subscriber = subscriberRepository.findByElementIdAndUser_C1Id(initiativeId, userId);
-		if (subscriber != null) {
-			return new GetResult<SubscriberDto>("success", "success", subscriber.toDto());	
-		} else {
-			return new GetResult<SubscriberDto>("success", "subscriber not found", null);
+	public GetResult<SubscriberDto> getSubscriber(UUID userId, UUID elementId, SubscriptionElementType type) {
+		Subscriber subscriber = subscriberRepository.findByElementIdAndTypeAndUser_C1Id(elementId, type, userId);
+		if (subscriber == null) {
+			subscriber = new Subscriber();
+			
+			subscriber.setInheritConfig(SubscriberInheritConfig.INHERIT);
+			subscriber.setType(type);
+			subscriber.setElementId(elementId);
+			subscriber.setUser(appUserRepository.findByC1Id(userId));
 		}
+		
+		return new GetResult<SubscriberDto>("success", "success", subscriber.toDto());
 		
 	}
 	
 	/** Each user have one general purposed Susbscriber element used to send general notifications
 	 * not associated to any initiative or element */
+	@Transactional
+	private Subscriber getOrCreateSubscriber(UUID elementId, SubscriptionElementType type, UUID userId) {
+		Subscriber subscriber = subscriberRepository.findByElementIdAndTypeAndUser_C1Id(elementId, type, userId);
+
+		if (subscriber != null) {
+			return subscriber;
+		}
+		
+		subscriber = new Subscriber();
+		
+		subscriber.setUser(appUserRepository.findByC1Id(userId));
+		subscriber.setElementId(elementId);
+		subscriber.setType(type);
+		
+		initDefaultSubscriber(subscriber);
+		
+		return subscriberRepository.save(subscriber);
+	}
+	
+	private void initDefaultSubscriber(Subscriber subscriber) {
+		subscriber.setInAppConfig(SubscriberInAppConfig.ALL_EVENTS);
+		subscriber.setPushConfig(SubscriberPushConfig.ONLY_MESSAGES);
+		subscriber.setEmailNowConfig(SubscriberEmailNowConfig.DISABLED);
+		subscriber.setEmailSummaryConfig(SubscriberEmailSummaryConfig.ALL_EVENTS);
+	}
+	
 	@Transactional
 	private Subscriber getOrCreateCollectiveOneSubscriber(UUID userId) {
 		Subscriber subscriber = subscriberRepository.findByUser_C1IdAndType(userId, SubscriptionElementType.COLLECTIVEONE);
@@ -202,8 +298,8 @@ public class ActivityService {
 		
 		subscriber.setType(SubscriptionElementType.COLLECTIVEONE);
 		subscriber.setUser(appUserRepository.findByC1Id(userId));
-		subscriber.setState(SubscriberState.SUBSCRIBED);
-		subscriber.setEmailNotificationsState(SubscriberEmailNotificationsState.SEND_NOW);
+		
+		initDefaultSubscriber(subscriber);
 		
 		return subscriberRepository.save(subscriber);
 	}
@@ -642,8 +738,10 @@ public class ActivityService {
 	 * 
 	 * */
 	
+	/** To be called within an activity transaction, modifies the notifications property of the
+	 * input activity */
 	
-	
+	/* Special case of new initiative created. ALl members are notified, not the subscribers */
 	private void addNewInitiativeNotifications (Activity activity) {
 		SortedSet<Member> members = activity.getInitiative().getMembers();
 		
@@ -651,106 +749,236 @@ public class ActivityService {
 			if(activity.getTriggerUser().getC1Id() != member.getUser().getC1Id()) {
 				/* add a notification only if the trigger user is not the subscriber */
 				Subscriber subscriber = getOrCreateCollectiveOneSubscriber(member.getUser().getC1Id());
-				
-				if (subscriber.getState() != SubscriberState.UNSUBSCRIBED) {
-					/* prepare a notification only if the subscriber is subscribed */
-					
-					Notification notification = new Notification();
-					notification.setCreationDate(new Timestamp(System.currentTimeMillis()));
-					notification.setActivity(activity);
-					notification.setSubscriber(subscriber);
-					
-					notification.setState(NotificationState.PENDING);
-					
-					/* if not unsubscribed from emails, set the email as peding */
-					if (subscriber.getEmailNotificationsState() != SubscriberEmailNotificationsState.DISABLED) {
-						notification.setEmailState(NotificationEmailState.PENDING);
-					} else {
-						notification.setEmailState(NotificationEmailState.DELIVERED);
-					}
-					
-					notification = notificationRepository.save(notification);
-					
-					activity.getNotifications().add(notification);
-				}
-				
+				createSubscriberNotification(subscriber, activity);
 			}
 		}
 	}
 	
-	
-	/** To be called within an activity transaction, modifies the notifications property of the
-	 * input activity */
 	private void addInitiativeActivityNotifications (Activity activity) {
-		List<Subscriber> subscribers = getInitiativeSubscribers(activity.getInitiative().getId());
 		
-		for (Subscriber subscriber : subscribers) {
+		/* this method build the full list of subscribers and add a notification for each of them */
+		Set<Subscriber> subscribers = new HashSet<Subscriber>();
+		
+		Boolean isInModel = false;
+		/* subscribers are derived from the sections if activity is on a card or section*/
+		switch (activity.getType()) {
+			case MODEL_CARDWRAPPER_ADDED:
+			case MODEL_CARDWRAPPER_DELETED:
+			case MODEL_CARDWRAPPER_CREATED:
+			case MODEL_CARDWRAPPER_EDITED:
+			case MODEL_CARDWRAPPER_MOVED:
+			case MODEL_CARDWRAPPER_REMOVED:
+			case MODEL_SECTION_ADDED:
+			case MODEL_SECTION_CREATED:
+			case MODEL_SECTION_DELETED:
+			case MODEL_SECTION_EDITED:
+			case MODEL_SECTION_MOVED:
+			case MODEL_SECTION_REMOVED:
+				
+				isInModel = true;
+				break;
+				
+			case MESSAGE_POSTED:
+				isInModel = (activity.getModelCardWrapper() != null) 
+					|| (activity.getModelSection() != null);
+				break;
 			
-			if (subscriber.getState() != SubscriberState.UNSUBSCRIBED) {
-				if(activity.getTriggerUser().getC1Id() != subscriber.getUser().getC1Id()) {
-					/* add a notification only if the trigger user is not the subscriber */
-					if (subscriber.getState() == SubscriberState.SUBSCRIBED) {
-						Notification notification = new Notification();
-						notification.setCreationDate(new Timestamp(System.currentTimeMillis()));
-						notification.setActivity(activity);
-						notification.setSubscriber(subscriber);
-						notification.setState(NotificationState.PENDING);
-						
-						/* if not unsubscribed from emails, set the email as peding */
-						if (subscriber.getEmailNotificationsState() != SubscriberEmailNotificationsState.DISABLED 
-								&& subscriber.getUser().getEmailNotificationsEnabled()) {
-							notification.setEmailState(NotificationEmailState.PENDING);
-						} else {
-							notification.setEmailState(NotificationEmailState.DELIVERED);
+			default:
+				break;			
+		}
+		
+		/* if the activity occurs in the model, search for subscribers based on sections */
+		if (isInModel) {
+			
+			List<ModelSection> sections = null;
+			switch (activity.getType()) {
+				case MODEL_CARDWRAPPER_ADDED:
+				case MODEL_CARDWRAPPER_DELETED:
+				case MODEL_CARDWRAPPER_CREATED:
+				case MODEL_CARDWRAPPER_EDITED:
+				case MODEL_CARDWRAPPER_MOVED:
+				case MODEL_CARDWRAPPER_REMOVED:
+					
+					/* activity in cards is considered as occurring on the sections these card is placed*/
+					sections = modelCardWrapperRepository.findParentSections(activity.getModelCardWrapper().getId());
+					break;
+					
+				default: 
+					/* activity in section applies to that section only */
+					sections = new ArrayList<ModelSection>();
+					sections.add(activity.getModelSection());
+					break;
+			}
+			
+			for (ModelSection section : sections) {
+				/* append the subscribers of this section and all its parents */
+				appendSectionSubscribers(section.getId(), subscribers);
+			}
+		}
+		
+		appendInitiativeSubscribers(activity.getInitiative().getId(), subscribers);
+
+		/* now prepare a notification for each subscriber */
+		for (Subscriber subscriber : subscribers) {
+			createSubscriberNotification(subscriber, activity);
+		}
+		
+	}
+	
+	private void createSubscriberNotification(Subscriber subscriber, Activity activity) {
+		if (subscriber.getInAppConfig() != SubscriberInAppConfig.DISABLED) {
+			
+			AppUser user = subscriber.getUser();
+			
+			Notification notification = new Notification();
+			notification.setCreationDate(new Timestamp(System.currentTimeMillis()));
+			notification.setActivity(activity);
+			notification.setSubscriber(subscriber);
+			
+			Boolean isOnline = subscriber.getUser().getOnlineStatus() == UserOnlineStatus.ONLINE;
+			if (isOnline) {
+				/* if the user is online, notification is marker as delivered */
+				notification.setInAppState(NotificationState.DELIVERED);
+				notification.setPushState(NotificationState.DELIVERED);
+				notification.setEmailNowState(NotificationState.DELIVERED);
+				notification.setEmailSummaryState(NotificationState.DELIVERED);
+				
+			} else {
+				notification.setInAppState(NotificationState.PENDING);
+				notification.setPushState(NotificationState.PENDING);
+				notification.setEmailNowState(NotificationState.PENDING);
+				notification.setEmailSummaryState(NotificationState.PENDING);
+				
+				/* mark as delivered in some scenarios */
+				Boolean isMentioned = activity.getMentions().contains(user);
+				Boolean isMessage = activity.getType() == ActivityType.MESSAGE_POSTED;
+				
+				switch (subscriber.getInAppConfig()) {
+				
+					case DISABLED:
+						/* this should never be the case  due to conditional some above */
+						notification.setInAppState(NotificationState.DELIVERED);
+						break;
+					
+					case ONLY_MENTIONS:
+						if (!isMentioned) {
+							notification.setInAppState(NotificationState.DELIVERED);
 						}
+						break;
 						
-						notification = notificationRepository.save(notification);
+					case ONLY_MESSAGES:
+						if (!isMessage) {
+							notification.setInAppState(NotificationState.DELIVERED);
+						}
+						break;	
 						
-						activity.getNotifications().add(notification);
-					}
+					case ALL_EVENTS:
+						break;
+				}
+				
+				switch (subscriber.getPushConfig()) {
+					case DISABLED:
+						/* this should never be the case  due to conditional some above */
+						notification.setPushState(NotificationState.DELIVERED);
+						break;
+					
+					case ONLY_MENTIONS:
+						if (!isMentioned) {
+							notification.setPushState(NotificationState.DELIVERED);
+						}
+						break;
+						
+					case ONLY_MESSAGES:
+						if (!isMessage) {
+							notification.setPushState(NotificationState.DELIVERED);
+						}
+						break;	
+						
+					case ALL_EVENTS:
+						break;
+				}
+				
+				switch (subscriber.getEmailNowConfig()) {
+					case DISABLED:
+						/* this should never be the case  due to conditional some above */
+						notification.setEmailNowState(NotificationState.DELIVERED);
+						break;
+					
+					case ONLY_MENTIONS:
+						if (!isMentioned) {
+							notification.setEmailNowState(NotificationState.DELIVERED);
+						}
+						break;
+						
+					case ONLY_MESSAGES:
+						if (!isMessage) {
+							notification.setEmailNowState(NotificationState.DELIVERED);
+						}
+						break;	
+						
+					case ALL_EVENTS:
+						break;
+				}
+				
+				switch (subscriber.getEmailSummaryConfig()) {
+					case DISABLED:
+						/* this should never be the case  due to conditional some above */
+						notification.setEmailSummaryState(NotificationState.DELIVERED);
+						break;
+					
+					case ONLY_MENTIONS:
+						if (!isMentioned) {
+							notification.setEmailSummaryState(NotificationState.DELIVERED);
+						}
+						break;
+						
+					case ONLY_MESSAGES:
+						if (!isMessage) {
+							notification.setEmailSummaryState(NotificationState.DELIVERED);
+						}
+						break;	
+						
+					case ALL_EVENTS:
+						break;
 				}
 			}
 			
+			notification = notificationRepository.save(notification);
+			
+			activity.getNotifications().add(notification);
+			
+		}
+	}
+	
+	/* update the input subscribers list */
+	private void appendSectionSubscribers(UUID sectionId, Set<Subscriber> allSubcribers) {
+		List<Subscriber> thisSubscribers = subscriberRepository.findByElementId(sectionId);
+		/* being a set, no duplicates are created */
+		allSubcribers.addAll(thisSubscribers);
+		
+		/* get section immediate parents */
+		GraphNode sectionNode = modelService.getSectionNode(sectionId, true, false, 1);
+		
+		for (GraphNode parent : sectionNode.getParents()) {
+			/* recursively add parent subscribers*/
+			appendSectionSubscribers(parent.getElementId(), allSubcribers);
 		}
 	}
 	
 	@Transactional
-	private List<Subscriber> getInitiativeSubscribers (UUID initiativeId) {
+	private void appendInitiativeSubscribers (UUID initiativeId, Set<Subscriber> allSubcribers) {
 		
 		/* example https://docs.google.com/drawings/d/1PqPhefzrGVlWVfG-SRGS56l_e2qpNEsajLbnsAWcTfA/edit,
 		 * assume initiativeId = C */
 		/* start with this initiative subscribers (S3 and S6 in example). Take into account that 
 		 * a subscriber state may be SUBSCRIPTION_DISABLED */
-		List<Subscriber> allSubscribers = subscriberRepository.findByElementId(initiativeId);
+		allSubcribers.addAll(subscriberRepository.findByElementId(initiativeId));
 		
-		/* then add the subscribers of all parent initiatives (B and A, in that order) */
+		/* then add the subscribers of all parent initiatives 2(B and A, in that order) */
 		List<Initiative> parents = initiativeService.getParentGenealogyInitiatives(initiativeId);
-		
 		for (Initiative parent : parents) {
-			List<Subscriber> parentSubscribers = subscriberRepository.findByElementId(parent.getId());
-			
-			for (Subscriber parentSubscriber : parentSubscribers) {
-				int ixOfSubscriber = indexOfSubscriber(allSubscribers, parentSubscriber);
-				if (ixOfSubscriber == -1) {
-					/* if this user is not already in the list of subscriptions, then
-					 * add it (this means that the applicable subscription is that at
-					 * the lowest level) */
-					allSubscribers.add(parentSubscriber);
-				}
-			}
+			allSubcribers.addAll(subscriberRepository.findByElementId(parent.getId()));
 		}
-		
-		return allSubscribers;
-	}
-	
-	private int indexOfSubscriber(List<Subscriber> subscribers, Subscriber parentSubscriber) {
-		for (int ix = 0; ix < subscribers.size(); ix++) {
-			Subscriber subscriber = subscribers.get(ix);
-			if (subscriber.getUser().getC1Id() == parentSubscriber.getUser().getC1Id()) {
-				return ix;
-			}
-		}
-		return -1;
 	}
 	
 }
