@@ -3,8 +3,10 @@ package org.collectiveone.modules.activity;
 import java.io.IOException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.UUID;
@@ -50,6 +52,7 @@ import org.collectiveone.modules.users.AppUserRepositoryIf;
 import org.collectiveone.modules.users.UserOnlineStatus;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -66,6 +69,9 @@ public class ActivityService {
 	
 	@Autowired
 	private MessageService messageService;
+	
+	@Autowired
+	private NotificationDtoBuilder notificationDtoBuilder;
 	
 	
 	@Autowired
@@ -89,6 +95,9 @@ public class ActivityService {
 	@Autowired
 	private ModelCardWrapperRepositoryIf modelCardWrapperRepository;
 	
+	
+	@Autowired
+	SimpMessagingTemplate template;
 	
 	@Transactional
 	public void sendWantToContributeEmails() throws IOException {
@@ -167,14 +176,15 @@ public class ActivityService {
 			UUID userId, 
 			NotificationContextType contextType, 
 			UUID elementId,
-			PageRequest page) {
+			PageRequest page,
+			Boolean isHtml) {
 		
 		List<NotificationDto> notificationsDtos = new ArrayList<NotificationDto>();
 		
 		List<Notification> notifications = userUnreadNotifications(userId, contextType, elementId, page);
 		
 		for(Notification notification : notifications) {
-			notificationsDtos.add(notification.toDto());
+			notificationsDtos.add(notificationDtoBuilder.getNotificationDto(notification, isHtml));
 		}
 		
 		return new GetResult<List<NotificationDto>>("success", "notifications found", notificationsDtos);
@@ -202,6 +212,22 @@ public class ActivityService {
 	}
 	
 	@Transactional
+	public PostResult notificationPushed(
+			UUID notificationId ) {
+		
+		Notification notification = notificationRepository.findById(notificationId);
+		
+		if (notification == null) {
+			return new PostResult("error", "notification not found", "");
+		}
+		
+		notification.setPushState(NotificationState.DELIVERED);
+		notificationRepository.save(notification);
+		
+		return new PostResult("success", "notification updated", "");
+	}
+	
+	@Transactional
 	public void addSubscriber(UUID elementId, UUID userId, SubscriptionElementType type) {
 		if (subscriberRepository.findByElementIdAndTypeAndUser_C1Id(elementId, type, userId) == null) {
 			Subscriber subscriber = new Subscriber();
@@ -220,7 +246,11 @@ public class ActivityService {
 	
 	@Transactional
 	public void removeSubscriber(UUID elementId, SubscriptionElementType type, UUID userId) {
-		Subscriber subscriber = subscriberRepository.findByElementIdAndTypeAndUser_C1Id(elementId, type, userId);
+		Subscriber subscriber = type == 
+				SubscriptionElementType.COLLECTIVEONE ? 
+						subscriberRepository.findByUser_C1IdAndType(userId, type) :
+						subscriberRepository.findByElementIdAndTypeAndUser_C1Id(elementId, type, userId);
+						
 		subscriberRepository.delete(subscriber);
 	}
 	
@@ -242,9 +272,68 @@ public class ActivityService {
 		return new PostResult("success", "member notifications changed", "");
 	}
 	
+	/* central DTO conversion to add context element logic */
+	private SubscriberDto getSubscriberDto(Subscriber subscriber) {
+		
+		SubscriberDto subscriberDto = subscriber.toDto();
+		
+		/* add dto of the context element */
+		switch (subscriber.getType()) {
+			case SECTION:
+				subscriberDto.setSection(modelSectionRepository.findById(subscriber.getElementId()).toDtoLight());
+				break;
+			
+			case INITIATIVE:
+				subscriberDto.setInitiative(initiativeRepository.findById(subscriber.getElementId()).toDto());
+				break;
+				
+			default: 
+				break;
+		}
+		
+		if (subscriber.getInheritConfig() == SubscriberInheritConfig.INHERIT) {
+			Subscriber applicableSubscriber = getApplicableSubscriber(
+					subscriber.getUser().getC1Id(), 
+					subscriber.getType(), 
+					subscriber.getElementId(),
+					false);
+			
+			SubscriberDto applicableSubscriberDto = applicableSubscriber.toDto();
+			
+			switch (applicableSubscriber.getType()) {
+				case SECTION:
+					applicableSubscriberDto.setSection(modelSectionRepository.findById(applicableSubscriber.getElementId()).toDtoLight());
+					break;
+				
+				case INITIATIVE:
+					applicableSubscriberDto.setInitiative(initiativeRepository.findById(applicableSubscriber.getElementId()).toDto());
+					break;
+					
+				default: 
+					break;
+			}
+			
+			subscriberDto.setApplicableSubscriber(applicableSubscriberDto);
+		}
+		
+		return subscriberDto; 
+	}
+	
+	@Transactional
+	public GetResult<SubscriberDto> getSubscriberInheritFrom(UUID userId, UUID elementId, SubscriptionElementType type) {
+		Subscriber applicableSubscriber = getApplicableSubscriber(userId, type, elementId, true);
+		return new GetResult<SubscriberDto>("success", "success", getSubscriberDto(applicableSubscriber));
+	}
+	
 	@Transactional
 	public GetResult<SubscriberDto> getSubscriber(UUID userId, UUID elementId, SubscriptionElementType type) {
-		Subscriber subscriber = subscriberRepository.findByElementIdAndTypeAndUser_C1Id(elementId, type, userId);
+		Subscriber subscriber = type == 
+			SubscriptionElementType.COLLECTIVEONE ? 
+					subscriberRepository.findByUser_C1IdAndType(userId, type) :
+					subscriberRepository.findByElementIdAndTypeAndUser_C1Id(elementId, type, userId);
+					
+		SubscriberDto subscriberDto = null;
+		
 		if (subscriber == null) {
 			subscriber = new Subscriber();
 			
@@ -255,9 +344,14 @@ public class ActivityService {
 			initDefaultSubscriber(subscriber);
 			
 			subscriber.setUser(appUserRepository.findByC1Id(userId));
+			
+			subscriberDto = getSubscriberDto(subscriber);
+			
+		} else {
+			subscriberDto = getSubscriberDto(subscriber);
 		}
 		
-		return new GetResult<SubscriberDto>("success", "success", subscriber.toDto());
+		return new GetResult<SubscriberDto>("success", "success", subscriberDto);
 		
 	}
 	
@@ -265,7 +359,10 @@ public class ActivityService {
 	 * not associated to any initiative or element */
 	@Transactional
 	private Subscriber getOrCreateSubscriber(UUID elementId, SubscriptionElementType type, UUID userId) {
-		Subscriber subscriber = subscriberRepository.findByElementIdAndTypeAndUser_C1Id(elementId, type, userId);
+		Subscriber subscriber = type == 
+				SubscriptionElementType.COLLECTIVEONE ? 
+						subscriberRepository.findByUser_C1IdAndType(userId, type) :
+						subscriberRepository.findByElementIdAndTypeAndUser_C1Id(elementId, type, userId);
 
 		if (subscriber != null) {
 			return subscriber;
@@ -282,30 +379,12 @@ public class ActivityService {
 		return subscriberRepository.save(subscriber);
 	}
 	
-	private void initDefaultSubscriber(Subscriber subscriber) {
+	public void initDefaultSubscriber(Subscriber subscriber) {
 		subscriber.setInAppConfig(SubscriberInAppConfig.ALL_EVENTS);
 		subscriber.setPushConfig(SubscriberPushConfig.ONLY_MESSAGES);
 		subscriber.setEmailNowConfig(SubscriberEmailNowConfig.DISABLED);
 		subscriber.setEmailSummaryConfig(SubscriberEmailSummaryConfig.ALL_EVENTS);
 		subscriber.setEmailSummaryPeriodConfig(SubscriberEmailSummaryPeriodConfig.DAILY);
-	}
-	
-	@Transactional
-	private Subscriber getOrCreateCollectiveOneSubscriber(UUID userId) {
-		Subscriber subscriber = subscriberRepository.findByUser_C1IdAndType(userId, SubscriptionElementType.COLLECTIVEONE);
-
-		if (subscriber != null) {
-			return subscriber;
-		}
-		
-		subscriber = new Subscriber();
-		
-		subscriber.setType(SubscriptionElementType.COLLECTIVEONE);
-		subscriber.setUser(appUserRepository.findByC1Id(userId));
-		
-		initDefaultSubscriber(subscriber);
-		
-		return subscriberRepository.save(subscriber);
 	}
 	
 	/**
@@ -752,20 +831,13 @@ public class ActivityService {
 		for (Member member : members) {
 			if(activity.getTriggerUser().getC1Id() != member.getUser().getC1Id()) {
 				/* add a notification only if the trigger user is not the subscriber */
-				Subscriber subscriber = getOrCreateCollectiveOneSubscriber(member.getUser().getC1Id());
+				Subscriber subscriber = subscriberRepository.findByUser_C1IdAndType(member.getUser().getC1Id(), SubscriptionElementType.COLLECTIVEONE);
 				createSubscriberNotification(subscriber, activity);
 			}
 		}
 	}
 	
-	private void addInitiativeActivityNotifications (Activity activity) {
-		
-		/* this method build the full list of subscribers and add a notification for each of them */
-		/* a separate set of user ids is used to make sure only one subscriber entity per user is added */
-		
-		Set<UUID> userIds = new HashSet<UUID>();
-		Set<Subscriber> subscribers = new HashSet<Subscriber>();
-		
+	private Boolean isInModel(Activity activity) {
 		Boolean isInModel = false;
 		/* subscribers are derived from the sections if activity is on a card or section*/
 		switch (activity.getType()) {
@@ -793,55 +865,185 @@ public class ActivityService {
 			default:
 				break;			
 		}
+		return isInModel;
+	}
+	
+	private void addInitiativeActivityNotifications (Activity activity) {
+		
+		createNotifications(activity);
+		
+		/* broadcast the event to connected websockets */
+		broadcastMessage(activity);
+	}
+	
+	private List<UUID> directlyAffectedSectionsIds(Activity activity) {
+		List<ModelSection> sections = null;
+		switch (activity.getType()) {
+			case MODEL_CARDWRAPPER_ADDED:
+			case MODEL_CARDWRAPPER_DELETED:
+			case MODEL_CARDWRAPPER_CREATED:
+			case MODEL_CARDWRAPPER_EDITED:
+			case MODEL_CARDWRAPPER_MOVED:
+			case MODEL_CARDWRAPPER_REMOVED:
+				
+				/* activity in cards is considered as occurring on the sections these card is placed*/
+				sections = modelCardWrapperRepository.findParentSections(activity.getModelCardWrapper().getId());
+				break;
+				
+			case MESSAGE_POSTED:
+				sections = new ArrayList<ModelSection>();
+				
+				/* message context is derived from the existence or not of the associated section */
+				if (activity.getModelSection() != null) {
+					sections.add(activity.getModelSection());	
+				} 
+				
+				if (activity.getModelCardWrapper() != null) {
+					sections.addAll(modelCardWrapperRepository.findParentSections(activity.getModelCardWrapper().getId()));
+				}
+				
+				break;
+				
+			default: 
+				/* activity in section applies to that section only */
+				sections = new ArrayList<ModelSection>();
+				sections.add(activity.getModelSection());
+				break;
+		}
+		
+		List<UUID> sectionsIds = new ArrayList<UUID>();
+		
+		for (ModelSection section : sections) {
+			sectionsIds.add(section.getId());
+		}
+		
+		return sectionsIds;
+	}
+	
+	/* this method must be consistent with the create notification method below. Otherwise the user wont know
+	 * what the hell is going on... */
+	private Subscriber getApplicableSubscriber(UUID userId, SubscriptionElementType elementType, UUID elementId, Boolean skipOne) {
+		Subscriber applicableSubscriber = null; 
+		
+		/* check if start on section */
+		if (elementType == SubscriptionElementType.SECTION) {
+			applicableSubscriber = findSubscriberOnSectionsRec(userId, elementId, new HashSet<UUID>(), skipOne);
+			skipOne = false;
+			
+			/* if found in sections */
+			if (applicableSubscriber != null) {
+				return applicableSubscriber;
+			}
+		}
+		
+		/* if not found in section or not relative to section, look on initiatives */
+		applicableSubscriber = findSubscriberOnInitiatives(userId, elementId, skipOne);
+		
+		/* if not found a CUSTOM subscriber in any section or initiative, use the user global subscriber */
+		if (applicableSubscriber == null) {
+			applicableSubscriber = subscriberRepository.findByUser_C1IdAndType(userId, SubscriptionElementType.COLLECTIVEONE);
+		}
+		
+		return applicableSubscriber;		
+	}
+	
+	private Subscriber findSubscriberOnSectionsRec(UUID userId, UUID sectionId, Set<UUID> readIds, Boolean skipOne) {
+		
+		if (!skipOne) {
+			Subscriber subscriber = subscriberRepository.findByElementIdAndTypeAndUser_C1Id(sectionId, SubscriptionElementType.SECTION, userId);
+			readIds.add(sectionId);
+			
+			/* if found, return it, otherwise look for it recursively in the parent sections*/
+			if (subscriber != null) {
+				if (subscriber.getInheritConfig() == SubscriberInheritConfig.CUSTOM) {
+					return subscriber;	
+				}
+			}	
+		}
+		
+		GraphNode sectionNode = modelService.getSectionNode(sectionId, true, false, 2);
+		
+		for (GraphNode parent : sectionNode.getParents()) {
+			/* recursively add parent subscribers*/
+			Subscriber parentSubscriber = findSubscriberOnSectionsRec(userId, parent.getElementId(), readIds, false);
+			
+			/* return (and stop searching other parents) if not null only */
+			if (parentSubscriber != null) {
+				return parentSubscriber;
+			}
+		}
+		
+		/* if no parents, return null*/
+		return null;
+		
+	}
+	
+	private Subscriber findSubscriberOnInitiatives(UUID userId, UUID initiativeId, Boolean skipOne) {
+		
+		Subscriber subscriber = null; 
+		
+		if (!skipOne) {
+			subscriber = subscriberRepository.findByElementIdAndTypeAndUser_C1Id(initiativeId, SubscriptionElementType.INITIATIVE, userId);
+			
+			if (subscriber != null) {
+				if (subscriber.getInheritConfig() == SubscriberInheritConfig.CUSTOM) {
+					return subscriber;	
+				}
+			}	
+		}
+		
+		List<Initiative> parents = initiativeService.getParentGenealogyInitiatives(initiativeId);
+		
+		for (Initiative parent : parents) {
+			subscriber = subscriberRepository.findByElementIdAndTypeAndUser_C1Id(parent.getId(), SubscriptionElementType.INITIATIVE, userId);
+			if (subscriber != null) {
+				if (subscriber.getInheritConfig() == SubscriberInheritConfig.CUSTOM) {
+					return subscriber;
+				}
+			}
+		}
+		
+		/* this should not occur, at least one subscriber CUSTOM subscriber should exist */
+		return null;
+		
+	}
+	
+	private void createNotifications (Activity activity) {
+		
+		/* this method build the full list of subscribers and add a notification for each of them */
+		/* a separate set of user ids is used to make sure only one subscriber entity per user is added 
+		 * This logic means that the first subscriber that is found and that is not whose type is not 'inherited'
+		 * will be the applicable subscriber */
+		
+		Map<UUID, Subscriber> subscribersMap = new HashMap<UUID, Subscriber>();
+		
+		Boolean isInModel = isInModel(activity);
 		
 		/* if the activity occurs in the model, search for subscribers based on sections */
 		if (isInModel) {
 			
-			List<ModelSection> sections = null;
-			switch (activity.getType()) {
-				case MODEL_CARDWRAPPER_ADDED:
-				case MODEL_CARDWRAPPER_DELETED:
-				case MODEL_CARDWRAPPER_CREATED:
-				case MODEL_CARDWRAPPER_EDITED:
-				case MODEL_CARDWRAPPER_MOVED:
-				case MODEL_CARDWRAPPER_REMOVED:
-					
-					/* activity in cards is considered as occurring on the sections these card is placed*/
-					sections = modelCardWrapperRepository.findParentSections(activity.getModelCardWrapper().getId());
-					break;
-					
-				case MESSAGE_POSTED:
-					sections = new ArrayList<ModelSection>();
-					
-					/* message context is derived from the existence or not of the associated section */
-					if (activity.getModelSection() != null) {
-						sections.add(activity.getModelSection());	
-					} 
-					
-					if (activity.getModelCardWrapper() != null) {
-						sections.addAll(modelCardWrapperRepository.findParentSections(activity.getModelCardWrapper().getId()));
-					}
-					
-					break;
-					
-				default: 
-					/* activity in section applies to that section only */
-					sections = new ArrayList<ModelSection>();
-					sections.add(activity.getModelSection());
-					break;
-			}
-			
-			for (ModelSection section : sections) {
+			for (UUID sectionId : directlyAffectedSectionsIds(activity)) {
 				/* append the subscribers of this section and all its parents */
-				appendSectionSubscribers(section.getId(), subscribers, userIds);
+				appendSectionSubscribers(sectionId, subscribersMap);
 			}
 		}
 		
-		appendInitiativeSubscribers(activity.getInitiative().getId(), subscribers, userIds);
-
+		/* then search for subscribers based on initiatives */
+		appendInitiativeSubscribers(activity.getInitiative().getId(), subscribersMap);
+		
+		/* now check if there are subscribers with INHERIT config, if so, use the personal
+		 * config of each user at CollectiveOne global level */
+		for (Map.Entry<UUID, Subscriber> entry : subscribersMap.entrySet()) {
+			Subscriber thisSubscriber = entry.getValue();
+			if (thisSubscriber.getInheritConfig() == SubscriberInheritConfig.INHERIT) {
+				Subscriber globalSubscriber = subscriberRepository.findByUser_C1IdAndType(thisSubscriber.getUser().getC1Id(), SubscriptionElementType.COLLECTIVEONE); 
+				subscribersMap.put(entry.getKey(), globalSubscriber);
+			}
+		}
+		
 		/* now prepare a notification for each subscriber */
-		for (Subscriber subscriber : subscribers) {
-			createSubscriberNotification(subscriber, activity);
+		for (Map.Entry<UUID, Subscriber> entry : subscribersMap.entrySet()) {
+			createSubscriberNotification(entry.getValue(), activity);
 		}
 		
 	}
@@ -974,15 +1176,24 @@ public class ActivityService {
 	}
 	
 	/* update the input subscribers list */
-	private void appendSectionSubscribers(UUID sectionId, Set<Subscriber> allSubcribers, Set<UUID> allUserIds) {
+	private void appendSectionSubscribers(UUID sectionId, Map<UUID, Subscriber> subscribersMap) {
 		List<Subscriber> thisSubscribers = subscriberRepository.findByElementId(sectionId);
-		/* being a set, no duplicates are created */
 		
 		for (Subscriber subscriber : thisSubscribers) {
-			if (!allUserIds.contains(subscriber.getUser().getC1Id())) {
-				allUserIds.add(subscriber.getUser().getC1Id());
-				allSubcribers.add(subscriber);		
-			} 
+			
+			if (!subscribersMap.containsKey(subscriber.getUser().getC1Id())) {
+				/* if the user has not been added, then just add him */
+				subscribersMap.put(subscriber.getUser().getC1Id(), subscriber);
+				
+			} else {
+				/* else, if this subscriber is CUSTOM, get the current subscriber and replace him if INHERIT */
+				if (subscriber.getInheritConfig() == SubscriberInheritConfig.CUSTOM) {
+					Subscriber existingSubscriber = subscribersMap.get(subscriber.getUser().getC1Id());
+					if (existingSubscriber.getInheritConfig() == SubscriberInheritConfig.INHERIT) {
+						subscribersMap.put(subscriber.getUser().getC1Id(), subscriber);
+					}
+				}
+			}
 		}
 		
 		/* get section immediate parents */
@@ -990,12 +1201,12 @@ public class ActivityService {
 		
 		for (GraphNode parent : sectionNode.getParents()) {
 			/* recursively add parent subscribers*/
-			appendSectionSubscribers(parent.getElementId(), allSubcribers, allUserIds);
+			appendSectionSubscribers(parent.getElementId(), subscribersMap);
 		}
 	}
 	
 	@Transactional
-	private void appendInitiativeSubscribers (UUID initiativeId, Set<Subscriber> allSubcribers, Set<UUID> allUserIds) {
+	private void appendInitiativeSubscribers (UUID initiativeId, Map<UUID, Subscriber> subscribersMap) {
 		
 		/* example https://docs.google.com/drawings/d/1PqPhefzrGVlWVfG-SRGS56l_e2qpNEsajLbnsAWcTfA/edit,
 		 * assume initiativeId = C */
@@ -1004,17 +1215,76 @@ public class ActivityService {
 		List<Subscriber> thisSubscribers = subscriberRepository.findByElementId(initiativeId);
 		
 		for (Subscriber subscriber : thisSubscribers) {
-			if (!allUserIds.contains(subscriber.getUser().getC1Id())) {
-				allUserIds.add(subscriber.getUser().getC1Id());
-				allSubcribers.add(subscriber);		
-			} 
+			if (!subscribersMap.containsKey(subscriber.getUser().getC1Id())) {
+				subscribersMap.put(subscriber.getUser().getC1Id(), subscriber);
+			} else {
+				/* else, if this subscriber is CUSTOM, get the current subscriber and replace him if INHERIT */
+				if (subscriber.getInheritConfig() == SubscriberInheritConfig.CUSTOM) {
+					Subscriber existingSubscriber = subscribersMap.get(subscriber.getUser().getC1Id());
+					if (existingSubscriber.getInheritConfig() == SubscriberInheritConfig.INHERIT) {
+						subscribersMap.put(subscriber.getUser().getC1Id(), subscriber);
+					}
+				}
+			}
 		}
 		
 		/* then add the subscribers of all parent initiatives 2(B and A, in that order) */
 		List<Initiative> parents = initiativeService.getParentGenealogyInitiatives(initiativeId);
 		for (Initiative parent : parents) {
-			allSubcribers.addAll(subscriberRepository.findByElementId(parent.getId()));
+			List<Subscriber> parentSubscribers = subscriberRepository.findByElementId(parent.getId());
+			
+			for (Subscriber parentSubscriber : parentSubscribers) {
+				subscribersMap.put(parentSubscriber.getUser().getC1Id(), parentSubscriber);
+				
+				if (!subscribersMap.containsKey(parentSubscriber.getUser().getC1Id())) {
+					subscribersMap.put(parentSubscriber.getUser().getC1Id(), parentSubscriber);
+				} else {
+					/* else, if this subscriber is CUSTOM, get the current subscriber and replace him if INHERIT */
+					if (parentSubscriber.getInheritConfig() == SubscriberInheritConfig.CUSTOM) {
+						Subscriber existingSubscriber = subscribersMap.get(parentSubscriber.getUser().getC1Id());
+						if (existingSubscriber.getInheritConfig() == SubscriberInheritConfig.INHERIT) {
+							subscribersMap.put(parentSubscriber.getUser().getC1Id(), parentSubscriber);
+						}
+					}
+				}
+				
+			}
 		}
 	}
 	
+	public void broadcastMessage (Activity activity) {
+		
+		/* message is broadcasted to all parent sections (if is in Model) and all parent initiatives */
+		
+		Boolean isInModel = isInModel(activity);
+		
+		if (isInModel) {
+			
+			/* sections in which the activity took place. Activity on cards can be in many sections at the same time */
+			List<UUID> sectionIds = directlyAffectedSectionsIds(activity);
+			
+			/* parent sections of these affected sections */
+			/* using a Set forces each UUID to be unique */
+			Set<UUID> allIncumbentSectionsIds = new HashSet<UUID>();
+			
+			/* add directly affected sections */
+			allIncumbentSectionsIds.addAll(sectionIds);
+			
+			/* add all parents of all sections */
+			for (UUID sectionId : sectionIds) {
+				allIncumbentSectionsIds.addAll(modelService.getSectionNode(sectionId, true, false, null).toList());
+			}
+			
+			/* send messages to all of them */
+			for (UUID sectionId : allIncumbentSectionsIds) {
+	    		template.convertAndSend("/channel/activity/model/section/" + sectionId, "UPDATE");
+			}
+			
+			/* if activity on a card wrapper, also broadcast its own channel */
+			if (activity.getModelCardWrapper() != null) {
+				template.convertAndSend("/channel/activity/model/card/" + activity.getModelCardWrapper().getId(), "UPDATE");
+			}
+		}
+		
+	}
 }
