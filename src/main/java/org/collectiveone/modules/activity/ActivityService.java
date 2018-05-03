@@ -828,13 +828,14 @@ public class ActivityService {
 	}
 	
 	@Transactional
-	public void messagePosted(Message message, AppUser triggerUser, MessageThreadContextType contextType, UUID elementId) {
+	public void messagePosted(Message message, AppUser triggerUser, MessageThreadContextType contextType, UUID elementId, List<AppUser> mentionedUsers) {
 		
 		Initiative initiative = initiativeRepository.findById(messageService.getInitiativeIdOfMessageThread(message.getThread()));
 		Activity activity = getBaseActivity(triggerUser, initiative); 
 		
 		activity.setType(ActivityType.MESSAGE_POSTED);
 		activity.setMessage(message);
+		activity.getMentionedUsers().addAll(mentionedUsers);
 		setMessageLocation(activity, contextType, elementId);
 		
 		activity = activityRepository.save(activity);
@@ -1134,7 +1135,7 @@ public class ActivityService {
 				notification.setEmailSummaryState(NotificationState.PENDING);
 				
 				/* mark as delivered in some scenarios */
-				Boolean isMentioned = activity.getMentions().contains(user);
+				Boolean isMentioned = activity.getMentionedUsers().contains(user);
 				Boolean isMessage = activity.getType() == ActivityType.MESSAGE_POSTED;
 				
 				switch (subscriber.getInAppConfig()) {
