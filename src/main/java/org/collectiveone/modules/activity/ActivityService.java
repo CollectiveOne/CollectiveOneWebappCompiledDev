@@ -109,8 +109,11 @@ public class ActivityService {
 	@Transactional
 	public void sendNotificationEmailsSendNow() throws IOException {
 		
+		/* 1 minutes ago */
+		Timestamp nowMinus = new Timestamp(System.currentTimeMillis() - (1L*1000L*60L)); 
+		
 		List<Notification> notifications = 
-				notificationRepository.findByEmailNowState(NotificationState.PENDING);
+				notificationRepository.findByEmailNowStateOlderThan(NotificationState.PENDING, nowMinus);
 		
 		emailService.sendNotificationsSendNow(notifications);
 	}
@@ -799,7 +802,8 @@ public class ActivityService {
 		activity.setType(ActivityType.MODEL_CARDWRAPPER_EDITED);
 		activity.setModelCardWrapper(cardWrapper);
 		activity = activityRepository.save(activity);
-		
+		System.out.println(activity.getId().toString()+" edited by sagar");
+		broadcastMessage(activity);
 		addInitiativeActivityNotifications(activity);
 	}
 	
@@ -1336,7 +1340,7 @@ public class ActivityService {
 			
 			/* send messages to all of them */
 			for (UUID sectionId : allIncumbentSectionsIds) {
-	    		template.convertAndSend("/channel/activity/model/section/" + sectionId, "UPDATE");
+				template.convertAndSend("/channel/activity/model/section/" + sectionId, "UPDATE");
 			}
 			
 		}
@@ -1345,7 +1349,7 @@ public class ActivityService {
 		List<Initiative> parentInits = initiativeService.getParentGenealogyInitiatives(activity.getInitiative().getId());
 		parentInits.add(activity.getInitiative()); //add parent initiative of activity to broadcast list
         for (Initiative init : parentInits) {
-            template.convertAndSend("/channel/activity/model/initaitive/" + init.getId(), "UPDATE");
+            template.convertAndSend("/channel/activity/model/initiative/" + init.getId(), "UPDATE");
         }
 	}
 }
