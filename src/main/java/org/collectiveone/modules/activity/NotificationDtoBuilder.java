@@ -41,15 +41,29 @@ public class NotificationDtoBuilder {
 		
 		Initiative initiative = act.getInitiative();
 		Initiative subInitiative = act.getSubInitiative();
-		TokenType tokenType = notification.getActivity().getTokenType();
-		TokenMint mint = notification.getActivity().getMint();
-		Assignation assignation = notification.getActivity().getAssignation();
-		InitiativeTransfer transfer = notification.getActivity().getInitiativeTransfer();
+		TokenType tokenType = act.getTokenType();
+		TokenMint mint = act.getMint();
+		Assignation assignation = act.getAssignation();
+		InitiativeTransfer transfer = act.getInitiativeTransfer();
 		
-		ModelSection modelSection = notification.getActivity().getModelSection();
-		ModelCardWrapper modelCardWrapper = notification.getActivity().getModelCardWrapper();
-		ModelSection onSection = notification.getActivity().getOnSection();
-		ModelSection fromSection = notification.getActivity().getFromSection();
+		ModelSection modelSection = null;
+		ModelCardWrapper modelCardWrapper = null;
+		
+		if (act.getModelCardWrapperAddition() != null) {
+			modelSection = act.getModelCardWrapperAddition().getSection();
+			modelCardWrapper = act.getModelCardWrapperAddition().getCardWrapper();
+		} else {
+			modelSection = act.getModelSection();
+			modelCardWrapper = act.getModelCardWrapper();
+		}
+		
+		ModelSection onSection = act.getOnSection();
+		ModelSection fromSection = act.getFromSection();
+		
+		if (act.getModelCardWrapperAddition() != null) {
+			modelCardWrapper = act.getModelCardWrapperAddition().getCardWrapper();
+			onSection = act.getModelCardWrapperAddition().getSection();
+		}
 		
 		String message = "";
 		String url = "";
@@ -218,6 +232,20 @@ public class NotificationDtoBuilder {
 			url = getModelCardWrapperUrl(modelCardWrapper.getInitiative().getId(), onSection.getId(), modelCardWrapper.getId());
 			break;
 			
+		case MODEL_CARDWRAPPER_MADE_SHARED:
+			message = checkHtml("<p>") + "made the card " + getModelCardWrapperAnchor(modelCardWrapper, onSection) + 
+			" on section " + getModelSectionAnchor(onSection) + checkHtml(" visible</p>");
+			
+			url = getModelCardWrapperUrl(modelCardWrapper.getInitiative().getId(), onSection.getId(), modelCardWrapper.getId());
+			break;
+			
+		case MODEL_CARDWRAPPER_MADE_COMMON:
+			message = checkHtml("<p>") + "made the card " + getModelCardWrapperAnchor(modelCardWrapper, onSection) + 
+			" on section " + getModelSectionAnchor(onSection) + checkHtml(" common</p>");
+			
+			url = getModelCardWrapperUrl(modelCardWrapper.getInitiative().getId(), onSection.getId(), modelCardWrapper.getId());
+			break;
+			
 		case MODEL_CARDWRAPPER_EDITED:
 			message = checkHtml("<p>") + "edited the card " + getModelCardWrapperAnchor(modelCardWrapper) + checkHtml("</p>");
 			url = getModelCardWrapperUrl(modelCardWrapper.getInitiative().getId(), modelCardWrapper.getId());
@@ -268,9 +296,14 @@ public class NotificationDtoBuilder {
 			
 		case MESSAGE_POSTED:
 			String from = "CollectiveOne";
-			if(notification.getActivity().getModelCardWrapper() != null) {
+			if(modelCardWrapper != null) {
 				
-				from = getModelCardWrapperAnchor(modelCardWrapper) + " card";
+				if (onSection != null ) {
+					from = getModelCardWrapperAnchor(modelCardWrapper, notification.getActivity().getOnSection()) + " card";	
+				} else {
+					from = getModelCardWrapperName(modelCardWrapper) + " card";
+				}
+				
 				url = getModelCardWrapperUrl(modelCardWrapper.getInitiative().getId(), modelCardWrapper.getId());
 				
 			} else if (notification.getActivity().getModelSection() != null) {
