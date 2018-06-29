@@ -1,7 +1,5 @@
 package org.collectiveone.modules.model;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.UUID;
 
 import javax.persistence.Column;
@@ -9,14 +7,9 @@ import javax.persistence.Entity;
 import javax.persistence.GeneratedValue;
 import javax.persistence.Id;
 import javax.persistence.Lob;
-import javax.persistence.ManyToMany;
 import javax.persistence.ManyToOne;
-import javax.persistence.OneToMany;
-import javax.persistence.OneToOne;
-import javax.persistence.OrderColumn;
 import javax.persistence.Table;
 
-import org.collectiveone.modules.conversations.MessageThread;
 import org.collectiveone.modules.initiatives.Initiative;
 import org.collectiveone.modules.model.dto.ModelSectionDto;
 import org.hibernate.annotations.GenericGenerator;
@@ -36,8 +29,6 @@ public class ModelSection {
 	@ManyToOne
 	private Initiative initiative;
 	
-	private Boolean isTopModelSection;
-	
 	@Column(name = "title", length = 42)
 	private String title;
 	
@@ -46,26 +37,6 @@ public class ModelSection {
 	@Column(name = "description")
 	private String description;
 	
-	@OneToMany(mappedBy="section")
-	private List<ModelCardWrapperAddition> cardsWrappersAdditionsPrivate = new ArrayList<ModelCardWrapperAddition>();
-	
-	@OneToMany(mappedBy="section")
-	private List<ModelCardWrapperAddition> cardsWrappersAdditionsShared = new ArrayList<ModelCardWrapperAddition>();
-	
-	@ManyToMany
-	@OrderColumn(name = "cards_order")
-	private List<ModelCardWrapperAddition> cardsWrappersAdditionsCommon = new ArrayList<ModelCardWrapperAddition>();
-	
-	
-	@ManyToMany
-	@OrderColumn(name = "subsections_order")
-	private List<ModelSection> subsections = new ArrayList<ModelSection>();
-	
-	@ManyToMany
-	private List<ModelSection> subsectionsTrash = new ArrayList<ModelSection>();
-	
-	@OneToOne
-	private MessageThread messageThread;
 	
 	@Override
 	public int hashCode() {
@@ -88,13 +59,17 @@ public class ModelSection {
 		return id.equals(other.getId());
 	}
 	
+	public String toString() {
+		return "id: " + id.toString() + " " + 	
+				"title: " + title + " ";
+	}
+	
 	public ModelSectionDto toDtoLight () {
 		ModelSectionDto sectionDto = new ModelSectionDto();
 		
 		sectionDto.setId(id.toString());
 		sectionDto.setTitle(title);
 		sectionDto.setDescription(description);
-		sectionDto.setIsTopModelSection(isTopModelSection);
 		if (initiative != null) sectionDto.setInitiativeId(initiative.getId().toString());
 		
 		return sectionDto; 
@@ -102,11 +77,7 @@ public class ModelSection {
 	
 	public ModelSectionDto toDto() {
 		ModelSectionDto sectionDto = toDtoLight();
-		
 		if (initiative != null) sectionDto.setInitiativeId(initiative.getId().toString());
-		
-		sectionDto.setnSubsections(subsections.size());
-		
 		return sectionDto;
 	}
 	
@@ -126,14 +97,6 @@ public class ModelSection {
 		this.initiative = initiative;
 	}
 	
-	public Boolean getIsTopModelSection() {
-		return isTopModelSection;
-	}
-
-	public void setIsTopModelSection(Boolean isTopModelSection) {
-		this.isTopModelSection = isTopModelSection;
-	}
-
 	public String getTitle() {
 		return title;
 	}
@@ -150,52 +113,4 @@ public class ModelSection {
 		this.description = description;
 	}
 
-	public List<ModelCardWrapperAddition> getCardsWrappersAdditionsCommon() {
-		return cardsWrappersAdditionsCommon;
-	}
-
-	public void setCardsWrappersAdditionsCommon(List<ModelCardWrapperAddition> cardsWrappersAdditionsCommon) {
-		this.cardsWrappersAdditionsCommon = cardsWrappersAdditionsCommon;
-	}
-
-	public List<ModelSection> getSubsections() {
-		return subsections;
-	}
-
-	public void setSubsections(List<ModelSection> subsections) {
-		this.subsections = subsections;
-	}
-
-	public List<ModelSection> getSubsectionsTrash() {
-		return subsectionsTrash;
-	}
-
-	public void setSubsectionsTrash(List<ModelSection> subsectionsTrash) {
-		this.subsectionsTrash = subsectionsTrash;
-	}
-
-	public MessageThread getMessageThread() {
-		return messageThread;
-	}
-
-	public void setMessageThread(MessageThread messageThread) {
-		this.messageThread = messageThread;
-	}
-
-	public List<ModelCardWrapperAddition> getCardsWrappersAdditionsPrivate() {
-		return cardsWrappersAdditionsPrivate;
-	}
-
-	public void setCardsWrappersAdditionsPrivate(List<ModelCardWrapperAddition> cardsWrappersAdditionsPrivate) {
-		this.cardsWrappersAdditionsPrivate = cardsWrappersAdditionsPrivate;
-	}
-
-	public List<ModelCardWrapperAddition> getCardsWrappersAdditionsShared() {
-		return cardsWrappersAdditionsShared;
-	}
-
-	public void setCardsWrappersAdditionsShared(List<ModelCardWrapperAddition> cardsWrappersAdditionsShared) {
-		this.cardsWrappersAdditionsShared = cardsWrappersAdditionsShared;
-	}
-		
 }

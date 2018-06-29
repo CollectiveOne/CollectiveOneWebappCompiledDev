@@ -4,7 +4,7 @@ import java.util.List;
 import java.util.UUID;
 
 import org.collectiveone.modules.model.ModelCardWrapperAddition;
-import org.collectiveone.modules.model.ModelCardWrapperScope;
+import org.collectiveone.modules.model.ModelScope;
 import org.collectiveone.modules.model.ModelSection;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -30,14 +30,20 @@ public interface ModelCardWrapperAdditionRepositoryIf extends CrudRepository<Mod
 			+ "WHERE crdWrpAdd.section.id = ?1 "
 			+ "AND crdWrpAdd.scope = ?2 "
 			+ "AND (crdWrpAdd.status != 'DELETED' OR crdWrpAdd.status IS NULL)")
-	List<ModelCardWrapperAddition> findInSectionWithScope(UUID sectionId, ModelCardWrapperScope scope);
+	List<ModelCardWrapperAddition> findInSectionWithScope(UUID sectionId, ModelScope scope);
+	
+	@Query("SELECT crdWrpAdd FROM ModelCardWrapperAddition crdWrpAdd "
+			+ "WHERE crdWrpAdd.section.id = ?1 "
+			+ "AND crdWrpAdd.scope = 'COMMON' "
+			+ "AND (crdWrpAdd.status != 'DELETED' OR crdWrpAdd.status IS NULL)")
+	List<ModelCardWrapperAddition> findCommonInSection(UUID sectionId);
 	
 	@Query("SELECT crdWrpAdd FROM ModelCardWrapperAddition crdWrpAdd "
 			+ "WHERE crdWrpAdd.adder.c1Id = ?1 "
 			+ "AND crdWrpAdd.section.id = ?2 "
 			+ "AND crdWrpAdd.scope = ?3 "
 			+ "AND (crdWrpAdd.status != 'DELETED' OR crdWrpAdd.status IS NULL)")
-	List<ModelCardWrapperAddition> findOfUserInSection(UUID userId, UUID sectionId, ModelCardWrapperScope scope);
+	List<ModelCardWrapperAddition> findOfUserInSection(UUID userId, UUID sectionId, ModelScope scope);
 	
 	@Query("SELECT crdWrpAdd FROM ModelCardWrapperAddition crdWrpAdd "
 			+ "JOIN crdWrpAdd.cardWrapper crdWrp "
@@ -48,11 +54,36 @@ public interface ModelCardWrapperAdditionRepositoryIf extends CrudRepository<Mod
 	ModelCardWrapperAddition findBySectionAndCardWrapperVisibleToUser(UUID sectionId, UUID cardWrapperId, UUID adderId);
 	
 	@Query("SELECT crdWrpAdd FROM ModelCardWrapperAddition crdWrpAdd "
+			+ "JOIN crdWrpAdd.cardWrapper crdWrp "
+			+ "WHERE crdWrp.id= ?2 "
+			+ "AND crdWrpAdd.section.id = ?1 "
+			+ "AND crdWrpAdd.adder.c1Id = ?3 "
+			+ "AND crdWrpAdd.status = 'DELETED'")
+	List<ModelCardWrapperAddition> findDeletedBySectionAndCardWrapperAndAdder(UUID sectionId, UUID cardWrapperId, UUID adderId);
+	
+	@Query("SELECT crdWrpAdd FROM ModelCardWrapperAddition crdWrpAdd "
 			+ "WHERE crdWrpAdd.cardWrapper.id= ?2 "
 			+ "AND crdWrpAdd.section.id = ?1 "
 			+ "AND crdWrpAdd.scope = ?3 "
 			+ "AND (crdWrpAdd.status != 'DELETED' OR crdWrpAdd.status IS NULL)")
-	ModelCardWrapperAddition findBySectionAndCardWrapperIdAndScope(UUID sectionId, UUID cardWrapperId, ModelCardWrapperScope scope);
+	ModelCardWrapperAddition findBySectionAndCardWrapperIdAndScope(UUID sectionId, UUID cardWrapperId, ModelScope scope);
+	
+	@Query("SELECT crdWrpAdd FROM ModelCardWrapperAddition crdWrpAdd "
+			+ "WHERE "
+			+ "crdWrpAdd.section.id = ?1 "
+			+ "AND crdWrpAdd.scope = ?2 "
+			+ "AND (crdWrpAdd.status != 'DELETED' OR crdWrpAdd.status IS NULL) "
+			+ "AND crdWrpAdd.beforeElement IS NULL")
+	List<ModelCardWrapperAddition> findLastBySectionAndScope(UUID sectionId, ModelScope scope);	
+	
+	@Query("SELECT crdWrpAdd FROM ModelCardWrapperAddition crdWrpAdd "
+			+ "WHERE "
+			+ "crdWrpAdd.section.id = ?1 "
+			+ "AND crdWrpAdd.adder.c1Id = ?2 "
+			+ "AND crdWrpAdd.scope = ?3 "
+			+ "AND (crdWrpAdd.status != 'DELETED' OR crdWrpAdd.status IS NULL) "
+			+ "AND crdWrpAdd.beforeElement IS NULL")
+	List<ModelCardWrapperAddition> findLastBySectionAndAdderAndScope(UUID sectionId, UUID adderId, ModelScope scope);	
 	
 	@Query("SELECT crdWrpAdd FROM ModelCardWrapperAddition crdWrpAdd "
 			+ "JOIN crdWrpAdd.cardWrapper crdWrp "
@@ -87,7 +118,7 @@ public interface ModelCardWrapperAdditionRepositoryIf extends CrudRepository<Mod
 			+ "AND (crdWrpAdd.scope != 'PRIVATE' OR crdWrpAdd.adder.c1Id = ?2)")
 	public Integer countCardWrapperAdditionsAccessibleTo(UUID cardWrapperId, UUID userId);
 	
-	default Boolean cardWrapperuserHaveAccess(UUID cardWrapperId, UUID userId) {
+	default Boolean cardWrapperUserHaveAccess(UUID cardWrapperId, UUID userId) {
 		Integer res = countCardWrapperAdditionsAccessibleTo(cardWrapperId, userId);
 		return res == null ? false : res > 0;
 	}

@@ -55,52 +55,72 @@ public class ModelController extends BaseController {
 		return modelService.getModel(initiativeId, level, getLoggedUserId(), onlySections);
 	}
 	
-	@RequestMapping(path = "/model/section/{sectionId}/subsection", method = RequestMethod.POST)
+	@RequestMapping(path = "/model/section/{parentSectionId}/subsection", method = RequestMethod.POST)
 	public PostResult createSectionSubsection(
-			@PathVariable("sectionId") String sectionIdStr,
-			@RequestBody ModelSectionDto sectionDto) {
+			@PathVariable("parentSectionId") String parentSectionIdStr,
+			@RequestBody ModelSectionDto sectionDto,
+			@RequestParam(name="onSubsectionId", defaultValue="") String onSubsectionIdStr,
+			@RequestParam(name = "isBefore", defaultValue="false") Boolean isBefore) {
 		
 		if (getLoggedUser() == null) {
 			return new PostResult("error", "endpoint enabled users only", null);
 		}
 		
-		UUID sectionId = UUID.fromString(sectionIdStr);
-		UUID initiativeId = modelService.getSectionInitiative(sectionId).getId();
+		UUID parentSectionId = UUID.fromString(parentSectionIdStr);
+		UUID initiativeId = modelService.getSectionInitiative(parentSectionId).getId();
 		
 		if (governanceService.canEditModel(initiativeId, getLoggedUserId()) == DecisionVerdict.DENIED) {
 			return new PostResult("error", "not authorized", "");
 		}
 		
-		return modelService.createSection(sectionDto, sectionId, getLoggedUserId(), true);
+		UUID onSubsectionId = onSubsectionIdStr.equals("") ? null : UUID.fromString(onSubsectionIdStr);
+		
+		return modelService.createSection(
+				sectionDto, 
+				parentSectionId, 
+				getLoggedUserId(),
+				onSubsectionId,
+				isBefore);
 	}
 	
-	@RequestMapping(path = "/model/section/{sectionId}/subsection/{subsectionId}", method = RequestMethod.PUT)
+	@RequestMapping(path = "/model/section/{parentSectionId}/subsection/{subsectionId}", method = RequestMethod.PUT)
 	public PostResult addExistingSectionSubsection(
-			@PathVariable("sectionId") String sectionIdStr,
+			@PathVariable("parentSectionId") String parentSectionIdStr,
 			@PathVariable("subsectionId") String subsectionIdStr, 
-			@RequestParam(name = "beforeSubsectionId", defaultValue="") String beforeSubsectionIdStr) {
+			@RequestParam(name = "onSubsectionId", defaultValue="") String onSubsectionIdStr, 
+			@RequestParam(name = "isBefore", defaultValue="false") Boolean isBefore,
+			@RequestParam(name = "scope", defaultValue="") String scopeStr) {
 		
 		if (getLoggedUser() == null) {
 			return new PostResult("error", "endpoint enabled users only", null);
 		}
 		
-		UUID sectionId = UUID.fromString(sectionIdStr);
-		UUID initiativeId = modelService.getSectionInitiative(sectionId).getId();
+		UUID parentSectionId = UUID.fromString(parentSectionIdStr);
+		UUID initiativeId = modelService.getSectionInitiative(parentSectionId).getId();
 		
 		if (governanceService.canEditModel(initiativeId, getLoggedUserId()) == DecisionVerdict.DENIED) {
 			return new PostResult("error", "not authorized", "");
 		}
 		
-		/* dropped on subsection can be empty */
-		UUID beforeSubsectionId =  beforeSubsectionIdStr.equals("") ? null : UUID.fromString(beforeSubsectionIdStr);
+		ModelScope scope = scopeStr.equals("") ? ModelScope.COMMON : ModelScope.valueOf(scopeStr);
 		
-		return modelService.addSection(UUID.fromString(subsectionIdStr), sectionId, beforeSubsectionId, getLoggedUserId());
+		/* dropped on subsection can be empty */
+		UUID onSubsectionId =  onSubsectionIdStr.equals("") ? null : UUID.fromString(onSubsectionIdStr);
+		
+		return modelService.addSubsectionToSection(
+				UUID.fromString(subsectionIdStr),
+				parentSectionId,
+				onSubsectionId,
+				isBefore,
+				getLoggedUserId(),
+				scope);
 	}
 	
 	@RequestMapping(path = "/model/section/{sectionId}", method = RequestMethod.PUT) 
 	public PostResult editSection(
 			@PathVariable("sectionId") String sectionIdStr,
-			@RequestBody ModelSectionDto sectionDto) {
+			@RequestBody ModelSectionDto sectionDto,
+			@RequestParam(name="parentSectionId", defaultValue="") String parentSectionIdStr) {
 		
 		if (getLoggedUser() == null) {
 			return new PostResult("error", "endpoint enabled users only", null);
@@ -113,7 +133,9 @@ public class ModelController extends BaseController {
 			return new PostResult("error", "not authorized", "");
 		}
 		
-		return modelService.editSection(sectionId, sectionDto, getLoggedUser().getC1Id());
+		UUID parentSectionId = parentSectionIdStr.equals("") ? null : UUID.fromString(parentSectionIdStr);
+		
+		return modelService.editSection(sectionId, parentSectionId, sectionDto, getLoggedUser().getC1Id());
 	}
 	
 	@RequestMapping(path = "/model/section/{sectionId}/removeSubsection/{subsectionId}", method = RequestMethod.PUT) 
@@ -139,8 +161,9 @@ public class ModelController extends BaseController {
 	public PostResult moveSectionSubsection(
 			@PathVariable("sectionId") String sectionIdStr,
 			@PathVariable("subsectionId") String subsectionIdStr,
+			@RequestParam(name = "toSectionId") String toSectionIdStr,
 			@RequestParam(name = "onSectionId", defaultValue="") String onSectionIdStr,
-			@RequestParam(name = "beforeSubsectionId", defaultValue="") String beforeSubsectionIdStr) {
+			@RequestParam(name = "isBefore", defaultValue="false") Boolean isBefore) {
 	
 		if (getLoggedUser() == null) {
 			return new PostResult("error", "endpoint enabled users only", null);
@@ -153,17 +176,15 @@ public class ModelController extends BaseController {
 			return new PostResult("error", "not authorized", "");
 		}
 		
-		/* dropped on section can be empty */
-		UUID onSectionId =  onSectionIdStr.equals("") ? null : UUID.fromString(onSectionIdStr);
-		
 		/* dropped on subsection can be empty */
-		UUID beforeSubsectionId =  beforeSubsectionIdStr.equals("") ? null : UUID.fromString(beforeSubsectionIdStr);
+		UUID onSectionId =  onSectionIdStr.equals("") ? null : UUID.fromString(onSectionIdStr);
 		
 		return modelService.moveSubsection(
 				sectionId, 
 				UUID.fromString(subsectionIdStr),
+				UUID.fromString(toSectionIdStr),
 				onSectionId,
-				beforeSubsectionId,
+				isBefore,
 				getLoggedUserId());
 	}
 	
@@ -171,7 +192,8 @@ public class ModelController extends BaseController {
 	public PostResult addExistingCard(
 			@PathVariable("sectionId") String sectionIdStr,
 			@PathVariable("cardWrapperId") String cardWrapperIdStr,
-			@RequestParam(name = "beforeCardWrapperId", defaultValue="") String beforeCardWrapperIdStr,
+			@RequestParam(name = "onCardWrapperId", defaultValue="") String onCardWrapperIdStr,
+			@RequestParam(name = "isBefore", defaultValue="false") Boolean isBefore,
 			@RequestParam(name = "scope", defaultValue="") String scopeStr) {
 	
 		if (getLoggedUser() == null) {
@@ -185,11 +207,17 @@ public class ModelController extends BaseController {
 			return new PostResult("error", "not authorized", "");
 		}
 		
-		ModelCardWrapperScope scope = scopeStr.equals("") ? ModelCardWrapperScope.COMMON : ModelCardWrapperScope.valueOf(scopeStr);
+		ModelScope scope = scopeStr.equals("") ? ModelScope.COMMON : ModelScope.valueOf(scopeStr);
 		
-		UUID beforeCardWrapperId = beforeCardWrapperIdStr.equals("") ? null : UUID.fromString(beforeCardWrapperIdStr);
+		UUID onCardWrapperId = onCardWrapperIdStr.equals("") ? null : UUID.fromString(onCardWrapperIdStr);
 		
-		return modelService.addCardToSection(UUID.fromString(sectionIdStr), cardWrapperId, beforeCardWrapperId, getLoggedUserId(), scope);
+		return modelService.addCardToSection(
+				UUID.fromString(sectionIdStr), 
+				cardWrapperId, 
+				onCardWrapperId, 
+				isBefore,
+				getLoggedUserId(), 
+				scope);
 	}
 	
 	@RequestMapping(path = "/model/section/{sectionId}/removeCard/{cardWrapperId}", method = RequestMethod.PUT) 
@@ -216,7 +244,8 @@ public class ModelController extends BaseController {
 			@PathVariable("sectionId") String fromSectionIdStr,
 			@PathVariable("cardWrapperId") String cardWrapperIdStr,
 			@RequestParam(name = "onSectionId") String onSectionIdStr,
-			@RequestParam(name = "onCardWrapperId", defaultValue="") String onCardWrapperIdStr) {
+			@RequestParam(name = "onCardWrapperId", defaultValue="") String onCardWrapperIdStr,
+			@RequestParam(name = "isBefore", defaultValue="false") Boolean isBefore) {
 	
 		if (getLoggedUser() == null) {
 			return new PostResult("error", "endpoint enabled users only", null);
@@ -240,6 +269,7 @@ public class ModelController extends BaseController {
 				cardWrapperId,
 				UUID.fromString(onSectionIdStr),
 				onCardWrapperID,
+				isBefore,
 				getLoggedUserId());
 	}
 	
@@ -247,7 +277,8 @@ public class ModelController extends BaseController {
 	public GetResult<ModelSectionDto> getSection(
 			@PathVariable("sectionId") String sectionIdStr,
 			@RequestParam(defaultValue = "1") Integer levels,
-			@RequestParam(name="onlySections", defaultValue = "false") Boolean onlySections) {
+			@RequestParam(name="onlySections", defaultValue = "false") Boolean onlySections,
+			@RequestParam(name="parentSectionId", defaultValue="") String parentSectionIdStr) {
 		
 		UUID sectionId = UUID.fromString(sectionIdStr);
 		UUID initiativeId = modelService.getSectionInitiative(sectionId).getId();
@@ -256,7 +287,9 @@ public class ModelController extends BaseController {
 			return new GetResult<ModelSectionDto>("error", "access denied", null);
 		}
 		
-		return modelService.getSection(sectionId, levels, getLoggedUserId(), onlySections);
+		UUID parentSectionId = parentSectionIdStr.equals("") ? null : UUID.fromString(parentSectionIdStr);
+		
+		return modelService.getSection(sectionId, parentSectionId, levels, getLoggedUserId(), onlySections);
 	}
 	
 	@RequestMapping(path = "/model/section/{sectionId}/cardWrappers", method = RequestMethod.GET) 
@@ -284,7 +317,7 @@ public class ModelController extends BaseController {
 			return new GetResult<ModelSectionLinkedDto>("error", "access denied", null);
 		}
 		
-		return modelService.getSectionParentGenealogy(sectionId, null);
+		return modelService.getSectionParentGenealogy(sectionId, null, getLoggedUserId());
 	}
 	
 	@RequestMapping(path = "/model/section/{sectionId}", method = RequestMethod.DELETE) 
@@ -310,8 +343,8 @@ public class ModelController extends BaseController {
 	public PostResult createCardWrapper(
 			@PathVariable("sectionId") String sectionIdStr,
 			@RequestBody ModelCardDto cardDto,
-			@RequestParam(name="beforeCardWrapperId", defaultValue="") String beforeCardWrapperIdStr,
-			@RequestParam(name="afterCardWrapperId", defaultValue="") String afterCardWrapperIdStr) {
+			@RequestParam(name="onCardWrapperId", defaultValue="") String onCardWrapperIdStr,
+			@RequestParam(name = "isBefore", defaultValue="false") Boolean isBefore) {
 		
 		if (getLoggedUser() == null) {
 			return new PostResult("error", "endpoint enabled users only", null);
@@ -324,14 +357,18 @@ public class ModelController extends BaseController {
 			return new PostResult("error", "not authorized", "");
 		}
 		
-		UUID beforeId = beforeCardWrapperIdStr.equals("") ? null : UUID.fromString(beforeCardWrapperIdStr);
-		UUID afterId = afterCardWrapperIdStr.equals("") ? null : UUID.fromString(afterCardWrapperIdStr);
+		UUID onCardWrapperId = onCardWrapperIdStr.equals("") ? null : UUID.fromString(onCardWrapperIdStr);
 		
-		return modelService.createCardWrapper(cardDto, sectionId, getLoggedUser().getC1Id(), beforeId, afterId);
+		return modelService.createCardWrapper(
+				cardDto, 
+				sectionId, 
+				getLoggedUserId(), 
+				onCardWrapperId, 
+				isBefore);
 	}
 	
-	@RequestMapping(path = "/model/cardWrapper/{cardWrapperId}", method = RequestMethod.GET) 
-	public GetResult<ModelCardWrapperDto> getCardWrapper(
+	@RequestMapping(path = "/model/cardWrapperAddition/{cardWrapperId}", method = RequestMethod.GET) 
+	public GetResult<ModelCardWrapperDto> getCardWrapperAddition(
 			@PathVariable("cardWrapperId") String cardWrapperIdStr,
 			@RequestParam(name="inSectionId", defaultValue="") String inSectionIdStr) {
 		
@@ -345,6 +382,20 @@ public class ModelController extends BaseController {
 		UUID inSectionId = inSectionIdStr.equals("") ? null : UUID.fromString(inSectionIdStr);
 		
 		return modelService.getCardWrapperAddition(cardWrapperId, getLoggedUserId(), inSectionId);
+	}
+	
+	@RequestMapping(path = "/model/cardWrapper/{cardWrapperId}", method = RequestMethod.GET) 
+	public GetResult<ModelCardWrapperDto> getCardWrapper(
+			@PathVariable("cardWrapperId") String cardWrapperIdStr) {
+		
+		UUID cardWrapperId = UUID.fromString(cardWrapperIdStr);
+		UUID initiativeId = modelService.getCardWrapperInitiative(cardWrapperId).getId();
+		
+		if (!initiativeService.canAccess(initiativeId, getLoggedUserId())) {
+			return new GetResult<ModelCardWrapperDto>("error", "access denied", null);
+		}
+		
+		return modelService.getCardWrapper(cardWrapperId, getLoggedUserId());
 	}
 	
 
@@ -489,7 +540,11 @@ public class ModelController extends BaseController {
 			return new GetResult<Page<ActivityDto>>("error", "access denied", null);
 		}
 		
-		return modelService.getActivityResultUnderSection(sectionId, new PageRequest(page, size), onlyMessages, levels);
+		/* logged user must be anonymous since null would give access to all section links */
+		UUID loggedUserId = getLoggedUserId();
+		loggedUserId = loggedUserId == null ? UUID.fromString("00000000-0000-0000-0000-000000000000") : loggedUserId;
+		
+		return modelService.getActivityResultUnderSection(sectionId, new PageRequest(page, size), onlyMessages, levels, loggedUserId);
 	}
 	
 	@RequestMapping(path = "/model/card/{cardWrapperId}/countMessages", method = RequestMethod.GET)

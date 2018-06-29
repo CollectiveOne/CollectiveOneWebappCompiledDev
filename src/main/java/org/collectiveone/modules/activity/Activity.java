@@ -26,6 +26,7 @@ import org.collectiveone.modules.initiatives.Initiative;
 import org.collectiveone.modules.model.ModelCardWrapper;
 import org.collectiveone.modules.model.ModelCardWrapperAddition;
 import org.collectiveone.modules.model.ModelSection;
+import org.collectiveone.modules.model.ModelSubsection;
 import org.collectiveone.modules.model.dto.ModelCardWrapperDto;
 import org.collectiveone.modules.tokens.InitiativeTransfer;
 import org.collectiveone.modules.tokens.TokenMint;
@@ -106,6 +107,10 @@ public class Activity {
 	@ManyToOne
 	private ModelCardWrapperAddition modelCardWrapperAddition;
 	
+	@ManyToOne
+	private ModelSubsection modelSubsection;
+	
+	
 	
 	// -------
 	
@@ -152,6 +157,12 @@ public class Activity {
 		if (type == ActivityType.MODEL_CARDWRAPPER_MADE_SHARED || type == ActivityType.MODEL_CARDWRAPPER_MADE_COMMON) {
 			dto.setModelCardWrapper(modelCardWrapperAddition.getCardWrapper().toDto());
 			dto.setModelSection(modelCardWrapperAddition.getSection().toDto());
+		}
+		
+
+		if (modelSubsection != null) {
+			dto.setModelSection(modelSubsection.getSection().toDtoLight());
+			dto.setOnSection(modelSubsection.getParentSection().toDtoLight());
 		}
 		
 		if(message != null) dto.setMessage(message.toDto());
@@ -328,6 +339,15 @@ public class Activity {
 	public void setModelCardWrapperAddition(ModelCardWrapperAddition modelCardWrapperAddition) {
 		this.modelCardWrapperAddition = modelCardWrapperAddition;
 	}
+
+	public ModelSubsection getModelSubsection() {
+		return modelSubsection;
+	}
+
+	public void setModelSubsection(ModelSubsection modelSubsection) {
+		this.modelSubsection = modelSubsection;
+	}
+	
 	
 	
 }
