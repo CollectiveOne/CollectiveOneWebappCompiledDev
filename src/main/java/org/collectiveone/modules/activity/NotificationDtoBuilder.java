@@ -33,7 +33,9 @@ public class NotificationDtoBuilder {
 		return isHtml ? str : "";
 	}
 
-	public NotificationDto getNotificationDto(Notification notification, Boolean isHtml) {
+	public NotificationDto getNotificationDto(
+			Notification notification, 
+			Boolean isHtml) {
 		
 		this.isHtml = isHtml;
 		
@@ -326,7 +328,20 @@ public class NotificationDtoBuilder {
 				
 			}
 			String text = notification.getActivity().getMessage().getText();
-			message = "commented in " + from + ": " + (text.length() > 60 ? text.substring(0, 60) + "..." : text);
+			
+			if (act.getMentionedUsers().contains(notification.getSubscriber().getUser())) {
+				/* mentioned to user */
+				message = "mentioned you in a comment in ";
+			} else {
+				message = "commented in ";
+			}
+			
+			String textLimited = "";
+			if (text != null) {
+				textLimited = isHtml ? text : (text.length() > 60 ? text.substring(0, 60) + "..." : text);	
+			}
+			message += from + ": " + textLimited;
+			
 			break;
 			
 		default:

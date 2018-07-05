@@ -15,7 +15,7 @@ import javax.transaction.Transactional;
 
 import org.collectiveone.common.dto.GetResult;
 import org.collectiveone.common.dto.PostResult;
-import org.collectiveone.modules.activity.dto.NotificationDto;
+import org.collectiveone.modules.activity.dto.NotificationsPackDto;
 import org.collectiveone.modules.activity.dto.SubscriberDto;
 import org.collectiveone.modules.activity.enums.ActivityType;
 import org.collectiveone.modules.activity.enums.NotificationContextType;
@@ -39,6 +39,7 @@ import org.collectiveone.modules.initiatives.Member;
 import org.collectiveone.modules.initiatives.dto.InitiativeDto;
 import org.collectiveone.modules.initiatives.repositories.InitiativeRepositoryIf;
 import org.collectiveone.modules.model.GraphNode;
+import org.collectiveone.modules.model.ModelCardWrapper;
 import org.collectiveone.modules.model.ModelCardWrapperAddition;
 import org.collectiveone.modules.model.ModelSection;
 import org.collectiveone.modules.model.ModelService;
@@ -139,11 +140,12 @@ public class ActivityService {
 		emailService.sendNotificationsGrouped(notifications);
 	}
 	
-	private List<Notification> userUnreadNotifications(
+	private NotificationsPack userNotifications(
 			UUID userId, 
 			NotificationContextType contextType, 
 			UUID elementId,
-			PageRequest page) {
+			PageRequest page,
+			Boolean onlyUnread) {
 		
 		List<UUID> allSectionIds = null;
 		List<UUID> cardsIds = null;
@@ -172,6 +174,16 @@ public class ActivityService {
 		
 		}
 		
+		List<NotificationState> states = new ArrayList<NotificationState>();
+		states.add(NotificationState.PENDING);
+		
+		if (!onlyUnread) {
+			states.add(NotificationState.DELIVERED);
+		}
+		
+		List<Notification> notifications = null;
+		Integer totalUnread = 0;
+		
 		if(isModel == true) {
 			if (allSectionIds.size() == 0) {
 				allSectionIds.add(UUID.randomUUID());
@@ -181,7 +193,8 @@ public class ActivityService {
 				cardsIds.add(UUID.randomUUID());
 			}
 			
-			return notificationRepository.findOfUserInSections(userId, NotificationState.PENDING, allSectionIds, cardsIds, page);
+			notifications = notificationRepository.findOfUserInSections(userId, states, allSectionIds, cardsIds, page);
+			totalUnread = notificationRepository.countOfUserInSections(userId, allSectionIds, cardsIds);
 			
 		} else {
 			List<InitiativeDto> subinitiativesTree = initiativeService.getSubinitiativesTree(elementId, null);
@@ -191,10 +204,16 @@ public class ActivityService {
 			allInitiativesIds.add(elementId);
 			allInitiativesIds.addAll(extractAllIdsFromInitiativesTree(subinitiativesTree, new ArrayList<UUID>()));
 			
-			return notificationRepository.findOfUserInInitiatives(userId, NotificationState.PENDING, allInitiativesIds, page);
+			notifications = notificationRepository.findOfUserInInitiatives(userId, states, allInitiativesIds, page);
+			totalUnread = notificationRepository.countOfUserInInitiatives(userId, allInitiativesIds);
 		}
 		
+		NotificationsPack notificationsPack = new NotificationsPack();
 		
+		notificationsPack.setNotifications(notifications);
+		notificationsPack.setTotalUnread(totalUnread != null ? totalUnread : 0);
+		
+		return notificationsPack;
 	}
 	
 	
@@ -212,22 +231,25 @@ public class ActivityService {
 	}
 
 	@Transactional
-	public GetResult<List<NotificationDto>> getUserNotifications(
+	public GetResult<NotificationsPackDto> getUserNotifications(
 			UUID userId, 
 			NotificationContextType contextType, 
 			UUID elementId,
 			PageRequest page,
-			Boolean isHtml) {
+			Boolean isHtml,
+			Boolean onlyUnread) {
 		
-		List<NotificationDto> notificationsDtos = new ArrayList<NotificationDto>();
 		
-		List<Notification> notifications = userUnreadNotifications(userId, contextType, elementId, page);
+		NotificationsPack notificationsPack = userNotifications(userId, contextType, elementId, page, onlyUnread);
+		NotificationsPackDto notificationsPackDto = new NotificationsPackDto();
 		
-		for(Notification notification : notifications) {
-			notificationsDtos.add(notificationDtoBuilder.getNotificationDto(notification, isHtml));
+		for(Notification notification : notificationsPack.getNotifications()) {
+			notificationsPackDto.getNotifications().add(notificationDtoBuilder.getNotificationDto(notification, isHtml));
 		}
 		
-		return new GetResult<List<NotificationDto>>("success", "notifications found", notificationsDtos);
+		notificationsPackDto.setTotalUnread(notificationsPack.getTotalUnread());
+		
+		return new GetResult<NotificationsPackDto>("success", "notifications found", notificationsPackDto);
 	}
 	
 	@Transactional
@@ -236,9 +258,9 @@ public class ActivityService {
 			NotificationContextType contextType, 
 			UUID elementId ) {
 		
-		List<Notification> notifications = userUnreadNotifications(userId, contextType, elementId, null);
+		NotificationsPack notificationsPack = userNotifications(userId, contextType, elementId, null, true);
 		
-		for(Notification notification: notifications) {
+		for(Notification notification: notificationsPack.getNotifications()) {
 			
 			notification.setInAppState(NotificationState.DELIVERED);
 			notification.setPushState(NotificationState.DELIVERED);
@@ -898,12 +920,16 @@ public class ActivityService {
 		switch (contextType) {
 			
 			case MODEL_CARD:
-				activity.setModelCardWrapper(modelCardWrapperRepository.findById(elementId));
+				ModelCardWrapper cardWrapper = modelCardWrapperRepository.findById(elementId);
+				activity.setModelCardWrapper(cardWrapper);
 				activity.setOnSection(modelSectionRepository.findById(contextOfContextElementId));
+				activity.setInitiative(cardWrapper.getInitiative());
 				break;
 			
 			case MODEL_SECTION:
-				activity.setModelSection(modelSectionRepository.findById(elementId));
+				ModelSection section = modelSectionRepository.findById(elementId);
+				activity.setModelSection(section);
+				activity.setInitiative(section.getInitiative());
 				break;
 				
 			case INITIATIVE:
@@ -1418,6 +1444,16 @@ public class ActivityService {
 		
 		if (isInModel) {
 			
+			/* card wrapper derived from card wrapper or card wrapper addition, whatever is not null... */
+			UUID cardWrapperId = activity.getModelCardWrapper() != null ? activity.getModelCardWrapper().getId() : null;
+			cardWrapperId = (cardWrapperId == null) ? 
+					((activity.getModelCardWrapperAddition() != null) ? activity.getModelCardWrapperAddition().getCardWrapper().getId() : null) :
+					cardWrapperId;
+			
+			if (cardWrapperId != null) {
+				template.convertAndSend("/channel/activity/model/card/" + cardWrapperId, "UPDATE");
+			}
+					
 			/* sections in which the activity took place. Activity on cards can be in many sections at the same time */
 			List<UUID> sectionIds = directlyAffectedSectionsIds(activity);
 			
